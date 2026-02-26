@@ -12,7 +12,133 @@ const int LED_BLUE = 8;      // Physical "Master Caution" LED
 // --- MISSION-SPECIFIC CONSTANTS ---
 const int ARM_RC_CHANNEL = 13;       // We look at the 14th channel (index 13)
 const float LEAD_SENSITIVITY = 6.0; // How much the reticle "leads" your turn
-const float ACCEL_1G = 512.0;       // Raw IMU value that represents 1G of gravity
+const float ACCEL_1G = 512.0;       // Raw IMU value that represents 1G of gravit#include <Arduino.h>
+#include <U8g2lib.h>
+#include <Wire.h>
+
+/* --- MASTER AVIONICS (ESP32-C3 #1) ---
+ * Handles: MSP Data Parsing, HUD Rendering (72x40), Serial Bridge to Slave
+ * Wiring: FC TX -> Pin 20 | Slave RX <- Pin 21
+ */
+
+U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 6, /* data=*/ 5);
+
+// --- MISSION CONSTANTS ---
+const int ARM_RC_CHANNEL = 13; 
+const float LEAD_SENSITIVITY = 6.0;
+const float ACCEL_1G = 512.0;
+const float VOLT_THRESHOLD = 14.0;
+const unsigned long BATT_DEBOUNCE = 2000;
+
+// --- SHARED DATA VARIABLES ---
+float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll = 0;
+float filteredX = 0, filteredY = 0;
+uint16_t armSwitchValue = 1000;
+bool sessionHasMSP = false, showLowBatText = false, currentlyReceiving = false;
+unsigned long lastRequest = 0, lastDataTime = 0, lowVoltTimer = 0, lastBroadcast = 0;
+
+void applyHardwareBoost(bool enable) {
+  if (enable) {
+    u8g2.sendF("c", 0xD9); u8g2.sendF("c", 0xF1);
+    u8g2.sendF("c", 0xDB); u8g2.sendF("c", 0x40);
+    u8g2.sendF("c", 0x8D); u8g2.sendF("c", 0x14);
+  } else {
+    u8g2.sendF("c", 0xD9); u8g2.sendF("c", 0x22);
+    u8g2.sendF("c", 0xDB); u8g2.sendF("c", 0x20);
+    u8g2.sendF("c", 0x8D); u8g2.sendF("c", 0x14);
+  }
+}
+
+void sendMSPRequest(uint8_t cmd) { 
+  uint8_t req[] = {'$', 'M', '<', 0, cmd, cmd}; 
+  Serial1.write(req, 6); 
+}
+
+void readMSPResponse() {
+  while (Serial1.available() >= 6) {
+    if (Serial1.peek() != '$') { Serial1.read(); continue; }
+    if (Serial1.available() >= 6) {
+      if (Serial1.read() == '$' && Serial1.read() == 'M' && Serial1.read() == '>') {
+        uint8_t size = Serial1.read(); 
+        uint8_t cmd = Serial1.read();
+        sessionHasMSP = true; lastDataTime = millis();
+        
+        if (cmd == 108) { // ATTITUDE
+          int16_t angX = Serial1.read() | (Serial1.read() << 8);
+          int16_t angY = Serial1.read() | (Serial1.read() << 8); 
+          roll = angX / 10.0; pitch = angY / 10.0;
+          for (int i = 0; i < size - 4; i++) Serial1.read();
+        } 
+        else if (cmd == 102) { // RAW IMU
+          for (int i = 0; i < 4; i++) Serial1.read();
+          int16_t az = Serial1.read() | (Serial1.read() << 8); 
+          currentG = (((float)az / ACCEL_1G) * 0.1) + (currentG * 0.9);
+          for (int i = 0; i < size - 6; i++) Serial1.read();
+        } 
+        else if (cmd == 110) { // ANALOG
+          vBat = ( (Serial1.read() / 10.0) * 0.2) + (vBat * 0.8);
+          for (int i = 0; i < size - 1; i++) Serial1.read();
+        } 
+        else if (cmd == 105) { // RC
+          for (int i = 0; i < 8; i++) Serial1.read();
+          for (int i = 4; i < ARM_RC_CHANNEL; i++) { Serial1.read(); Serial1.read(); }
+          armSwitchValue = Serial1.read() | (Serial1.read() << 8); 
+          int bytesConsumed = 8 + ((ARM_RC_CHANNEL - 4) * 2) + 2; 
+          for (int i = 0; i < (size - bytesConsumed); i++) Serial1.read(); 
+        } 
+        else { for (int i = 0; i < size; i++) Serial1.read(); }
+      }
+    }
+  }
+}
+
+void setup() {
+  // Pin 20 = RX from FC, Pin 21 = TX out to Slave ESP
+  Serial1.begin(115200, SERIAL_8N1, 20, 21);
+  u8g2.begin();
+  applyHardwareBoost(true); // HUD is always in "Sunlight Mode"
+}
+
+void loop() {
+  // 1. Data Acquisition
+  if (millis() - lastRequest > 50) { 
+    sendMSPRequest(108); sendMSPRequest(105); 
+    sendMSPRequest(102); sendMSPRequest(110); 
+    lastRequest = millis(); 
+  }
+  readMSPResponse();
+
+  // 2. Physics & Logic
+  currentlyReceiving = (millis() - lastDataTime < 1000);
+  if (currentlyReceiving) {
+    float pDelta = (pitch - lastPitch); float rDelta = (roll - lastRoll);
+    filteredX = ( (rDelta * -LEAD_SENSITIVITY) * 0.12) + (filteredX * 0.88);
+    filteredY = ( (pDelta * LEAD_SENSITIVITY) * 0.12) + (filteredY * 0.88);
+    lastPitch = pitch; lastRoll = roll;
+  }
+
+  // 3. Serial Broadcast to Cockpit (Slave ESP32)
+  if (millis() - lastBroadcast > 50) {
+    // Format: V,G,P,R
+    Serial1.print(vBat); Serial1.print(",");
+    Serial1.print(currentG); Serial1.print(",");
+    Serial1.print(pitch); Serial1.print(",");
+    Serial1.println(roll);
+    lastBroadcast = millis();
+  }
+
+  // 4. Render HUD
+  u8g2.firstPage();
+  do {
+    u8g2.drawCircle(36, 20, 17);
+    int curX = 36 + (int)filteredX; int curY = 20 + (int)filteredY;
+    u8g2.drawBox(curX - 1, curY - 1, 3, 3);
+    // G-Meter
+    u8g2.drawLine(0, 10, 0, 30);
+    int gPos = 20 - (int)((currentG - 1.0) * 8.0);
+    u8g2.drawHLine(0, constrain(gPos, 10, 30), 3);
+  } while (u8g2.nextPage());
+}y
 const float VOLT_THRESHOLD = 14.0;   // 3.5V per cell (4S pack)
 const unsigned long BATT_DEBOUNCE = 2000; // Time in ms battery must stay low to trigger alarm
 
