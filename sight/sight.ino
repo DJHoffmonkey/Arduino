@@ -143,10 +143,12 @@ void loop() {
   digitalWrite(LED_BLUE, ledOn ? LOW : HIGH);
 
   if (millis() - lastBroadcast > 50) {
+    // Protocol: V, G, P, R, H (Added Heading)
     Serial1.print(vBat); Serial1.print(",");
     Serial1.print(currentG); Serial1.print(",");
     Serial1.print(pitch); Serial1.print(",");
-    Serial1.println(roll);
+    Serial1.print(roll); Serial1.print(",");
+    Serial1.println(heading); // Ensure your MSP parser updates 'heading'
     lastBroadcast = millis();
   }
 
