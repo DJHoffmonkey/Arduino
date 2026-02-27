@@ -70,20 +70,48 @@ void parseData(String data) {
     masterArmed = (data.substring(c5 + 1).toInt() == 1);
   }
 }
+// Global flags to track which screens actually exist
+bool hasL = false, hasR = false, hasP1 = false, hasP2 = false, hasS = false;
 
 void setup() {
-  Serial1.begin(115200, SERIAL_8N1, 20, 21);
-  u8g2_L.begin(); u8g2_R.begin();
-  u8g2_P1.setI2CAddress(0x3C * 2); u8g2_P1.begin();
-  u8g2_P2.setI2CAddress(0x3D * 2); u8g2_P2.begin();
-  u8g2_S.begin();
+  Serial.begin(115200);
   
-  syncContrast(false); // Start Dim
+  // 1. Initialize Communication Pipes
+  Serial1.begin(115200, SERIAL_8N1, 20, 21); // Master Link
+  
+  // 2. Initialize I2C Bus once
+  Wire.begin(5, 6); 
+  Wire.setClock(400000); 
+
+  Serial.println("--- SCREEN DISCOVERY ---");
+
+  // Reset all flags
+  hasL = hasR = hasP1 = hasP2 = hasS = false;
+
+  // 3. Test P1 (The 0.96" Screen)
+  u8g2_P1.setI2CAddress(0x3C);
+  
+  // Use .begin() - the library should now pick up the existing Wire bus
+  if(u8g2_P1.begin()) { 
+    hasP1 = true; 
+    Serial.println("P1: OK (0x3C)"); 
+  } else {
+    Serial.println("P1: NOT FOUND");
+  }
+
+  // 4. Leave others as 'false' for now to prevent bus crashes
+  // We won't even call .begin() on them yet.
+  
+  syncContrast(false); 
+
+  Serial.println("------------------------");
+  Serial.println("SLAVE LISTENING...");
 }
 
 void loop() {
   if (Serial1.available()) {
     String line = Serial1.readStringUntil('\n');
+    Serial.println(line);
     parseData(line);
 
     // Instrument brightness

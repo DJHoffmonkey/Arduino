@@ -93,7 +93,21 @@ void readMSPResponse() {
 }
 
 void setup() {
-  Serial1.begin(115200, SERIAL_8N1, 20, 21);
+  // 1. LINK TO COMPUTER (USB Debugging)
+  // Ensure "USB CDC On Boot" is ENABLED in the Arduino Tools menu
+  Serial.begin(115200); 
+  
+  // 2. LINK TO FLIGHT CONTROLLER (Pins 20/21)
+  // This is your existing working FC connection
+  Serial1.begin(115200, SERIAL_8N1, 20, 21); 
+
+  // 3. LINK TO SLAVE (Cockpit Screens)
+  // We use Serial0 but re-route it to Pin 10 (TX) and Pin 7 (RX)
+  // This prevents it from clashing with the FC on pins 20/21
+  //Serial0.begin(115200, SERIAL_8N1, 7, 10); 
+  Serial0.begin(115200, SERIAL_8N1, 3, 2);
+
+  // Hardware Initialization
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
   pinMode(LED_BLUE, OUTPUT);
   digitalWrite(LED_BLUE, HIGH); 
@@ -101,6 +115,12 @@ void setup() {
   u8g2.begin();
   u8g2.setContrast(20);
   applyHardwareBoost(false);
+
+  // This will now print to your Computer Console
+  Serial.println("MASTER ONLINE");
+  Serial.println("Pipe 1: USB (Debug)");
+  Serial.println("Pipe 2: Serial1 (FC on 20/21)");
+  Serial.println("Pipe 3: Serial0 (Slave on Pin 2)");
 }
 
 void loop() {
