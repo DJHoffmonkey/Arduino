@@ -132,13 +132,11 @@ void setup() {
 }
 
 void readMasterData() {
-  if (fromMaster.available() > 0) {
+  while (fromMaster.available() > 0) {
     String tag = fromMaster.readStringUntil(':'); 
-    float value = fromMaster.parseFloat();
+    tag.trim(); // Remove any hidden spaces or newlines
     
-    // --- CONSOLE PRINTING
-    console.print("TAG: "); console.print(tag);
-    console.print(" | VAL: "); console.println(value);
+    float value = fromMaster.parseFloat();
     
     if (tag == "ROL") roll = value;
     else if (tag == "PIT") pitch = value;
@@ -147,37 +145,31 @@ void readMasterData() {
     else if (tag == "BAT") vBat = value;
     else if (tag == "GFO") currentG = value;
     else if (tag == "WAR") warActive = (value > 0.5);
-    
-    // Clear trailing separators
-    while (fromMaster.available() > 0 && (fromMaster.peek() == ',' || fromMaster.peek() == '\n')) {
+
+    // Skip the comma/newline to get to the next Tag immediately
+    if (fromMaster.peek() == ',' || fromMaster.peek() == '\n' || fromMaster.peek() == '\r') {
       fromMaster.read();
     }
+    
+    // Safety: If the buffer is getting too full, break out and draw
+    if (fromMaster.available() > 64) break; 
   }
 }
 
 void loop() {
-  // 1. Listen for the tagged stream from Master
-  if (fromMaster.available() > 0) {
-    String tag = fromMaster.readStringUntil(':'); 
-    float value = fromMaster.parseFloat();
-    
-    // 2. Map tagged values to the correct instrument variables
-    if (tag == "ROL") cockpit.horizon.val1 = value;
-    else if (tag == "PIT") cockpit.horizon.val2 = value;
-    else if (tag == "ALT") cockpit.altimeter.val1 = value;
-    
-    // 3. Clean up the separator (comma or newline)
-    while (fromMaster.available() > 0 && (fromMaster.peek() == ',' || fromMaster.peek() == '\n' || fromMaster.peek() == '\r')) {
-      fromMaster.read();
-    }
-  }
+  // Process ALL waiting data from the Master
+  readMasterData(); 
 
-  // 4. Refresh Displays (Mechanical style: constant sweep)
+  // Refresh Horizon (using the cleaned global variables)
   u8g2e1.clearBuffer();
+  cockpit.horizon.val1 = roll;
+  cockpit.horizon.val2 = pitch;
   drawHorizon(cockpit.horizon);
   u8g2e1.sendBuffer();
 
+  // Refresh Altimeter
   u8g2e2.clearBuffer();
+  cockpit.altimeter.val1 = altitude;
   drawAltimeter(cockpit.altimeter);
   u8g2e2.sendBuffer();
 }
