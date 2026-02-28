@@ -137,6 +137,10 @@ void readMasterData() {
     tag.trim(); // Remove any hidden spaces or newlines
     
     float value = fromMaster.parseFloat();
+
+    // --- CONSOLE PRINTING
+    console.print("TAG: "); console.print(tag);
+    console.print(" | VAL: "); console.println(value);
     
     if (tag == "ROL") roll = value;
     else if (tag == "PIT") pitch = value;
