@@ -201,28 +201,30 @@ void setup() {
     }
   }
 
-  // MODE ASSIGNMENT AND FINAL PORT INIT
+  // --- MODE ASSIGNMENT AND FINAL PORT INIT ---
   if (sessionHasMSP) {
     isBenchMode = false;
     console.println("MODE: FLIGHT (MSP DETECTED)");
-    
-    // START SLAVE PORT (Cockpit Screens)
-    // Starting this AFTER the FC is found prevents hardware resource clashing
-    // Start the hardware serial 0
-    toSlave.begin(115200, SERIAL_8N1, SLAVE_RX, SLAVE_TX);
-
-    // 2. FORCE UART0 (toSlave) to disconnect from GPIO 20/21
-    // UART_NUM_0 is the hardware index for toSlave
-    uart_set_pin(UART_NUM_0, SLAVE_TX, SLAVE_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    
-    // 3. FORCE UART1 (toAndFromFC) to claim GPIO 20/21
-    uart_set_pin(UART_NUM_1, TX_TO_FC, RX_FROM_FC, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-    console.println("HARDWARE PIN LOCK APPLIED");
-
   } else {
     isBenchMode = true;
     console.println("MODE: BENCH (FC TIMEOUT)");
+  }
+
+  // 1. START SLAVE PORT (Always active for both modes)
+  // We do this here to ensure Bench Mode actually sends data to the cockpit
+  toSlave.begin(115200, SERIAL_8N1, SLAVE_RX, SLAVE_TX);
+
+  // 2. FORCE UART0 (toSlave) to lock to Slave Pins
+  // This prevents UART0 from accidentally floating or conflicting with FC pins
+  uart_set_pin(UART_NUM_0, SLAVE_TX, SLAVE_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+  // 3. IF IN FLIGHT MODE: Apply the Hardware Pin Lock for the FC
+  if (!isBenchMode) {
+    // Force UART1 to claim the FC pins (20/21)
+    uart_set_pin(UART_NUM_1, TX_TO_FC, RX_FROM_FC, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    console.println("FLIGHT HARDWARE PIN LOCK APPLIED");
+  } else {
+    console.println("BENCH MODE: SLAVE ACTIVE, FC UART BYPASSED");
   }
 
   // Visual confirmation of boot completion
@@ -255,7 +257,7 @@ void loop() {
     float t = millis() / 1000.0;
     pitch = sin(t * 0.5) * 20.0; 
     roll = cos(t * 0.8) * 45.0; 
-    altitude = 500 + (sin(t * 0.2) * 100);
+    altitude = 2500 + (sin(t * 0.1) * 2000); // Swings from 500ft to 4500ft
     heading += 0.5; 
     if (heading >= 360) {
       heading = 0;
