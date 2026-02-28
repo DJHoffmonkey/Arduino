@@ -43,6 +43,7 @@ float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll 
 float filteredX = 0, filteredY = 0;
 uint16_t armSwitchValue = 1000;
 bool sessionHasMSP = false, currentlyReceiving = false, showLowBatText = false;
+float altitude = 0;
 
 // --- HARDWARE BOOST (STARK HACK) ---
 void applyHardwareBoost(bool enable) {
@@ -68,17 +69,37 @@ void readMSPResponse() {
   while (Serial1.available() >= 6) {
     if (Serial1.peek() != '$') { Serial1.read(); continue; }
     if (Serial1.read() == '$' && Serial1.read() == 'M' && Serial1.read() == '>') {
-      uint8_t size = Serial1.read(); uint8_t cmd = Serial1.read();
-      sessionHasMSP = true; lastDataTime = millis();
+      uint8_t size = Serial1.read(); 
+      uint8_t cmd = Serial1.read();
+      sessionHasMSP = true; 
+      lastDataTime = millis();
 
       if (cmd == 108) { // ATTITUDE + HEADING
         int16_t angX = Serial1.read() | (Serial1.read() << 8); // Roll
         int16_t angY = Serial1.read() | (Serial1.read() << 8); // Pitch
         int16_t head = Serial1.read() | (Serial1.read() << 8); // Heading
-        roll = angX / 10.0; pitch = angY / 10.0; heading = (float)head;
+        roll = angX / 10.0; 
+        pitch = angY / 10.0; 
+        heading = (float)head;
+        
+        // Clear remaining bytes in this packet
         for (int i = 0; i < size - 6; i++) Serial1.read();
+
+        // --- SEND TO SLAVE ---
+        // We send the data here because ATTITUDE is usually the highest frequency update
+        Serial.print(roll);    Serial.print(",");
+        Serial.print(pitch);   Serial.print(",");
+        Serial.print(heading); Serial.print(",");
+        Serial.println(altitude); // This uses the global 'altitude' updated by cmd 109
       } 
-      else if (cmd == 102) { // RAW IMU
+      else if (cmd == 109) { // ALTITUDE (MSP_ALTITUDE)
+        int32_t altCm = Serial1.read() | (Serial1.read() << 8) | (Serial1.read() << 16) | (Serial1.read() << 24);
+        // Convert cm to feet (1 cm = 0.0328084 feet)
+        altitude = altCm * 0.0328084; 
+        // Read vario (2 bytes) and remaining
+        for (int i = 0; i < size - 4; i++) Serial1.read();
+      }
+      else if (cmd == 102) { // RAW IMU (G-Force)
         for (int i = 0; i < 4; i++) Serial1.read();
         int16_t az = Serial1.read() | (Serial1.read() << 8); 
         currentG = (((float)az / ACCEL_1G) * 0.1) + (currentG * 0.9);
@@ -95,11 +116,12 @@ void readMSPResponse() {
         int bytesConsumed = 8 + ((ARM_RC_CHANNEL - 4) * 2) + 2; 
         for (int i = 0; i < (size - bytesConsumed); i++) Serial1.read(); 
       } 
-      else { for (int i = 0; i < size; i++) Serial1.read(); }
+      else { 
+        for (int i = 0; i < size; i++) Serial1.read(); 
+      }
     }
   }
 }
-
 void setup() {
   // turn off logging for the moment.
   esp_log_level_set("*", ESP_LOG_NONE);
