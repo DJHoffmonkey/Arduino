@@ -99,6 +99,7 @@ void readMSPResponse() {
       } 
       else { 
         for (int i = 0; i < size; i++) Serial1.read(); 
+      }
     }
   }
 }
