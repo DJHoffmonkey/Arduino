@@ -28,7 +28,7 @@ const int SLAVE_TX = 2;
 const int SLAVE_RX = 3;
 const int RX_FROM_FC = 20;
 const int TX_TO_FC = 21;
-const int ARM_RC_CHANNEL = 13; 
+const int ARM_RC_CHANNEL = 14; 
 const float LEAD_SENSITIVITY = 6.0;
 const float ACCEL_1G = 512.0;
 const float VOLT_THRESHOLD = 14.0;
@@ -267,17 +267,24 @@ void loop() {
     currentlyReceiving = false; 
   } 
   else {
-    if (millis() - lastRequest > 50) { 
-      sendMSPRequest(108); 
-      sendMSPRequest(109); 
-      sendMSPRequest(105); 
-      sendMSPRequest(102); 
-      sendMSPRequest(110); 
-      sendMSPRequest(151); 
+    // STAGGERED REQUESTS (Prevents Buffer Collisions)
+    static int mspStep = 0;
+    if (millis() - lastRequest > 25) { // Request ONE item every 25ms
+      mspStep++;
+      if (mspStep == 1) sendMSPRequest(108); // ATTITUDE
+      if (mspStep == 2) sendMSPRequest(109); // ALTITUDE
+      if (mspStep == 3) sendMSPRequest(105); // RC CHANNELS (The "WAR" bit)
+      if (mspStep == 4) sendMSPRequest(102); // RAW IMU
+      if (mspStep == 5) {
+        sendMSPRequest(110); // VOLTS
+        mspStep = 0;         // Reset cycle
+      }
       lastRequest = millis(); 
     }
     readMSPResponse();
-    currentlyReceiving = (millis() - lastDataTime < 1000);
+    
+    // Tighten the timeout: If no data for 250ms, mark as disconnected
+    currentlyReceiving = (millis() - lastDataTime < 250);
   }
 
   // SHARED PHYSICS
