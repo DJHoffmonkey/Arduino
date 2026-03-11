@@ -44,7 +44,7 @@ bool manualMode = false, insaneModeActive = false, txMax = false, lastBootState 
 unsigned long buttonDownTime = 0, lastRequest = 0, lastDataTime = 0, lowVoltTimer = 0, lastBroadcast = 0;
 
 // Flight Data
-float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll = 0, heading = 0, altitude = 0, baro = 0;
+float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll = 0, heading = 0, altitude = 0, baro = 0, airSpeed = 0;
 float filteredX = 0, filteredY = 0;
 uint16_t armSwitchValue = 1000;
 bool sessionHasMSP = false, currentlyReceiving = false, showLowBatText = false, isBenchMode = true;
@@ -116,6 +116,9 @@ void readMSPResponse() {
         int32_t altCm = (int32_t)p [0] | ((int32_t)p [1] << 8) | ((int32_t)p [2] << 16) | ((int32_t)p [3] << 24);
         altitude = (float)altCm * 0.0328084; 
         baro = 29.92;
+        // Speed is in cm/s, converting to MPH
+        int16_t speedCmS = p [4] | (p [5] << 8);
+        airSpeed = (float)speedCmS * 0.0223694;
       }
       else if (cmd == 102 && size >= 6) { // RAW IMU
         int16_t az = p [4] | (p [5] << 8); 
@@ -344,6 +347,10 @@ void loop() {
     
     toSlave.print("ALT:"); 
     toSlave.print(altitude);
+    toSlave.print(",");
+
+    toSlave.print("ASP:"); 
+    toSlave.print(airSpeed);
     toSlave.print(",");
     
     toSlave.print("BAT:"); 
