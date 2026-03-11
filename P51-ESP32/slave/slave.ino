@@ -180,27 +180,17 @@ void drawAirspeed(Instrument &inst) {
   U8G2* dev = inst.screen;
   float speed = inst.val1; 
   float targetVal = inst.val2;
-  int cx = inst.x; int cy = inst.y; int r = inst.r;
+  int cx = inst.x; int cy = inst.y; int r = inst.r; // cy is 99
   
   int tickInnerR = r - 4;
   int numberR = r - 9;
   int innerDelineator = r - 14;
 
-  // 1. FRAME & SHADING
-  dev->drawCircle(cx, cy, r);
-  dev->drawCircle(cx, cy, tickInnerR);
-  dev->drawCircle(cx, cy, innerDelineator);
+  // 1. CLEAN FRAME
+//  dev->drawCircle(cx, cy, r);               
+//  dev->drawCircle(cx, cy, tickInnerR);       
 
-  // Center Dither (5%)
-  for (int i = -innerDelineator; i <= innerDelineator; i++) {
-    for (int j = -innerDelineator; j <= innerDelineator; j++) {
-      if (i*i + j*j < (innerDelineator * innerDelineator)) {
-        if ((i + j) % 4 == 0) dev->drawPixel(cx + i, cy + j);
-      }
-    }
-  }
-
-  // 2. SCALE MAPPING FUNCTION
+  // 2. SCALE MAPPING
   auto getSpeedAngle = [](float s) -> float {
     float angle;
     if (s <= 300) {
@@ -226,7 +216,7 @@ void drawAirspeed(Instrument &inst) {
                   cx + r*cos(a), cy + r*sin(a));
   }
 
-  // 4. DRAW LABELS (50, 100, 150, 200, 250, 300, 400, 500, 600, 700)
+  // 4. DRAW LABELS
   dev->setFont(u8g2_font_04b_03_tr);
   int labels [10] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
   for (int i = 0; i < 10; i++) {
@@ -238,11 +228,11 @@ void drawAirspeed(Instrument &inst) {
   }
 
   // 5. THE HANDS
-  // Secondary Hand (Target)
+  // Secondary Target Hand
   float sAng = getSpeedAngle(targetVal);
   dev->drawLine(cx, cy, cx + (r - 2)*cos(sAng), cy + (r - 2)*sin(sAng));
 
-  // Main Hand (Slender Triangle)
+  // Main Slender Triangle Hand
   float mAng = getSpeedAngle(speed);
   int hx = cx + (r - 2)*cos(mAng);
   int hy = cy + (r - 2)*sin(mAng);
@@ -251,11 +241,10 @@ void drawAirspeed(Instrument &inst) {
                     cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
   dev->drawLine(cx, cy, hx, hy);
 
-  // 6. HUB
+  // 6. THE HUB (Pivot only)
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
 }
-
 void setup() {
   Wire.begin(EXT_OLED_SDA, EXT_OLED_SCL);
   Wire.setClock(400000);
