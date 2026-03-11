@@ -69,7 +69,6 @@ void drawHorizon(Instrument &inst) {
   float cosR = cos(rollRad);
   float sinR = sin(rollRad);
   
-  // Half-length of 45 is the sweet spot for a 128x64 display
   float xL = 45.0 * cosR;
   float yL = 45.0 * sinR;
 
@@ -84,21 +83,28 @@ void drawHorizon(Instrument &inst) {
     constrain(x2, 0, 127), constrain(y2, 0, 63)
   );
 
-  // 5. THE "MUSHROOM" PEDESTAL (Bottom Mask)
-  dev->drawBox(inst.x - 2, inst.y + 10, 5, 22);
-  dev->drawDisc(inst.x, inst.y + 10, 4, U8G2_DRAW_ALL);
-
-  // 6. FIXED AIRCRAFT REFERENCE (Restored "W" + Pointer)
-  // First set of wings and center pointer
-  int ay = inst.y + 8; 
-  dev->drawHLine(inst.x - 16, ay, 10); // Left wing
-  dev->drawHLine(inst.x + 6, ay, 10);  // Right wing
-  dev->drawVLine(inst.x, ay - 6, 4);   // The top center "needle"
+  // 5. THE TRIDENT PEDESTAL (Replacing Mushroom/W)
+  // Vertical Stem
+  dev->drawVLine(inst.x, inst.y + 11, 18); 
   
-  // The "W" Frame and Second set of Wings
-  dev->drawHLine(inst.x - 15, inst.y + 5, 10);
-  dev->drawHLine(inst.x + 5, inst.y + 5, 10);
-  dev->drawFrame(inst.x - 2, inst.y + 3, 5, 5);
+  // The Curved Cradle Arms
+  // Left Arm
+  dev->drawLine(inst.x, inst.y + 13, inst.x - 7, inst.y + 9);
+  dev->drawHLine(inst.x - 10, inst.y + 9, 3);
+  
+  // Right Arm
+  dev->drawLine(inst.x, inst.y + 13, inst.x + 7, inst.y + 9);
+  dev->drawHLine(inst.x + 7, inst.y + 9, 3);
+
+  // 6. FIXED LEVEL PIPS (The 3 and 9 o'clock markers)
+  dev->drawHLine(inst.x - inst.r, inst.y, 4);
+  dev->drawHLine(inst.x + inst.r - 4, inst.y, 4);
+
+  // 7. CENTER REFERENCE DOT (The "Nose")
+  dev->drawDisc(inst.x, inst.y, 2); 
+
+  // 8. TOP POINTER (The triangle at 12 o'clock)
+  dev->drawTriangle(inst.x, inst.y - 14, inst.x - 3, inst.y - 10, inst.x + 3, inst.y - 10);
 }
 
 void drawAltimeter(Instrument &inst) {
