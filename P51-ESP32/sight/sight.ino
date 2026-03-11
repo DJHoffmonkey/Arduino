@@ -256,19 +256,20 @@ void loop() {
   lastBootState = currentBootState;
 
   // DATA ACQUISITION (LOCKED MODE)
-  if (isBenchMode) {
+if (isBenchMode) {
     float t = millis() / 1000.0;
     
     // Physics Sweeps
     pitch = sin(t * 0.5) * 20.0; 
     roll = cos(t * 0.8) * 45.0; 
     
-    // Altimeter: Swings from 500ft to 7500ft
-    altitude = 4000 + (sin(t * 0.2) * 3500); 
+    // Altimeter: Swings from 0 to 450ft (approx 137m)
+    // Matches the 500ft full-sweep dial
+    altitude = 225.0 + (sin(t * 0.2) * 225.0); 
 
-    // Airspeed: Swings from 50mph to 700mph
-    // We use a slower sine wave so you can study the non-linear compression
-    airSpeed = 375 + (sin(t * 0.15) * 325); 
+    // Airspeed: Swings from 5mph to 115mph
+    // Matches the 120mph linear dial
+    airSpeed = 60.0 + (sin(t * 0.15) * 55.0); 
 
     heading += 0.5; 
     if (heading >= 360) heading = 0;
@@ -276,8 +277,7 @@ void loop() {
     vBat = 16.2;
     currentG = 1.0;
     currentlyReceiving = false; 
-  }
-  else {
+  } else {
     // STAGGERED REQUESTS (Prevents Buffer Collisions)
     static int mspStep = 0;
     if (millis() - lastRequest > 25) { // Request ONE item every 25ms

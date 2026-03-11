@@ -185,82 +185,65 @@ void drawAirspeed(Instrument &inst) {
   int numberR = r - 11;      
   int innerDelineator = r - 14;
 
-  // 1. MAPPING (12:30 Start, 11:00 Finish, Maximum 300-700 Spacing)
+  // 1. LINEAR MAPPING (0 to 120 mph)
+  // 12:30 start (-60 deg), sweeping 330 degrees around to ~11:30
   auto getSpeedAngle = [](float s) -> float {
     float startPos = -60.0; 
-    float angle;
-    if (s <= 300) {
-      // 50 to 300: Sweeps 185 degrees
-      angle = startPos + ((s - 50.0) / 250.0) * 185.0;
-    } else {
-      // 300 to 700: Sweeps 145 degrees (Stretched for better spacing)
-      angle = (startPos + 185.0) + ((s - 300.0) / 400.0) * 145.0;
-    }
+    float totalSweep = 330.0;
+    float maxSpeed = 120.0;
+    
+    // Linear scale: every mph gets the same amount of "arc"
+    float angle = startPos + (s / maxSpeed) * totalSweep;
     return angle * (PI / 180.0);
   };
 
   // 2. DRAW TICKS
-  for (int s = 50; s <= 300; s += 10) {
+  // Major ticks every 10 mph, minor ticks every 2 mph
+  for (int s = 0; s <= 120; s += 2) {
     float a = getSpeedAngle((float)s);
-    int tLen = (s % 50 == 0) ? 0 : 3; 
+    int tLen = (s % 10 == 0) ? 0 : 3; // 10s are full length, others are short
     dev->drawLine(cx + (tickInnerR + tLen)*cos(a), cy + (tickInnerR + tLen)*sin(a), 
                   cx + r*cos(a), cy + r*sin(a));
   }
-  for (int s = 350; s <= 700; s += 50) {
-    float a = getSpeedAngle((float)s);
-    dev->drawLine(cx + tickInnerR*cos(a), cy + tickInnerR*sin(a), 
-                  cx + r*cos(a), cy + r*sin(a));
-  }
 
-  // 3. DRAW LABELS
+  // 3. DRAW LABELS (Clean 10-mph increments)
   dev->setFont(u8g2_font_04b_03_tr);
-  int labels[] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
-  for (int i = 0; i < 10; i++) {
-    float a = getSpeedAngle((float)labels[i]);
+  for (int s = 0; s <= 120; s += 20) { // Labels every 20mph to keep it clean
+    float a = getSpeedAngle((float)s);
     char buf[4];
-    itoa(labels[i], buf, 10);
+    itoa(s, buf, 10);
     
-    int tx = cx + numberR*cos(a) - 3; 
+    int tx = cx + numberR*cos(a) - (s >= 100 ? 5 : 3); 
     int ty = cy + numberR*sin(a) + 3;
     
-    // Position-specific nudges to clear the ticks
-    if (labels[i] == 700) { tx -= 3; ty -= 2; } 
-    if (labels[i] == 600) { tx -= 4; ty += 1; }
-    if (labels[i] == 500) { tx -= 4; }           
-    if (labels[i] == 50)  { tx += 3; ty -= 1; } 
+    // Nudge the start/end to avoid the gap
+    if (s == 0)   { tx += 2; ty -= 1; }
+    if (s == 120) { tx -= 3; ty -= 2; }
 
     dev->drawStr(tx, ty, buf);
   }
 
-  // 4. THE BEEFY HAND (Broad Taper)
-  if (speed >= 40.0) { 
+  // 4. THE BEEFY SWORD HAND
+  // Draw the needle if we have any speed
+  if (speed >= 2.0) { 
     float mAng = getSpeedAngle(speed);
-    
-    // Tip of the needle (Pushed slightly further out for clarity)
     int tipX = cx + (r - 1) * cos(mAng);
     int tipY = cy + (r - 1) * sin(mAng);
     
-    // Base Width: Increased to 0.45 radians for a very aggressive taper
-    // This creates a base nearly 6-7 pixels wide at the pivot
-    float baseWidth = 0.45; 
-    float baseDist = 4.0; // Starts the base slightly outside the hub disc
+    float baseWidth = 0.40; 
+    float baseDist = 4.0;
     
     int b1x = cx + baseDist * cos(mAng + baseWidth);
     int b1y = cy + baseDist * sin(mAng + baseWidth);
-    
     int b2x = cx + baseDist * cos(mAng - baseWidth);
     int b2y = cy + baseDist * sin(mAng - baseWidth);
     
-    // Draw the main heavy body
     dev->drawTriangle(tipX, tipY, b1x, b1y, b2x, b2y);
-    
-    // Fill in the hub-to-base gap for a solid "sword" look
-    dev->drawLine(cx, cy, tipX, tipY);
-    dev->drawLine(b1x, b1y, b2x, b2y); // Closes the base for better fill
+    dev->drawLine(cx, cy, tipX, tipY); 
   }
 
   // 5. THE HUB
-  dev->setDrawColor(0); dev->drawDisc(cx, cy, 3); // Slightly larger black disc to seat the beefy needle
+  dev->setDrawColor(0); dev->drawDisc(cx, cy, 3);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 3);
 }
 
