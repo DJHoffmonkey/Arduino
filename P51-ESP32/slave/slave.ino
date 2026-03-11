@@ -186,25 +186,25 @@ void drawAirspeed(Instrument &inst) {
   int numberR = r - 10;      
   int innerDelineator = r - 14;
 
-
-  // 2. THE "P-51 OFFSET" MAPPING
-  // Start (50) is at ~75 degrees (12:15 position)
-  // End (700) is at ~105 degrees (11:45 position) 
-  // Total sweep is roughly 330 degrees
+  // 1. MAPPING (Shifted for 12:45 start)
   auto getSpeedAngle = [](float s) -> float {
     float angle;
+    // We want the gap to be at the top. 
+    // -90 is 12 o'clock. 0 is 3 o'clock.
+    // To get 12:45, we start at roughly -45 degrees.
+    float startPos = -45.0; 
+    
     if (s <= 300) {
-      // 50 to 300: High precision sweep (approx 200 degrees)
-      angle = -75.0 + ((s - 50.0) / 250.0) * 200.0;
+      // 50 to 300: High precision (approx 210 degrees sweep)
+      angle = startPos + ((s - 50.0) / 250.0) * 210.0;
     } else {
-      // 300 to 700: Compressed sweep (approx 130 degrees)
-      angle = 125.0 + ((s - 300.0) / 400.0) * 130.0;
+      // 300 to 700: Compressed (approx 110 degrees sweep)
+      angle = (startPos + 210.0) + ((s - 300.0) / 400.0) * 110.0;
     }
-    // Final rotation to align 50 at the 12:15 spot
-    return (angle - 15.0) * (PI / 180.0);
+    return angle * (PI / 180.0);
   };
 
-  // 3. DRAW TICKS
+  // 2. DRAW TICKS
   for (int s = 50; s <= 300; s += 10) {
     float a = getSpeedAngle((float)s);
     int tLen = (s % 50 == 0) ? 0 : 3; 
@@ -217,7 +217,7 @@ void drawAirspeed(Instrument &inst) {
                   cx + r*cos(a), cy + r*sin(a));
   }
 
-  // 4. DRAW LABELS
+  // 3. DRAW LABELS
   dev->setFont(u8g2_font_04b_03_tr);
   int labels [10] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
   for (int i = 0; i < 10; i++) {
@@ -225,31 +225,37 @@ void drawAirspeed(Instrument &inst) {
     char buf [4];
     itoa(labels [i], buf, 10);
     
-    // Fine-tune label centers
-    int tx = cx + numberR*cos(a) - 4; 
+    // Geometry correction for text centering
+    int tx = cx + numberR*cos(a) - ( (labels [i] >= 100) ? 6 : 3 ); 
     int ty = cy + numberR*sin(a) + 3;
     dev->drawStr(tx, ty, buf);
   }
 
-  // 5. THE HANDS
-  // Secondary Target Hand
+  // 4. THE HANDS
+  
+  // A. Secondary Hand (Increased Visibility)
+  // Drawn as a thin "needle" line but with a tiny 1px offset to make it 2px wide
   float sAng = getSpeedAngle(targetVal);
-  dev->drawLine(cx, cy, cx + (r - 2)*cos(sAng), cy + (r - 2)*sin(sAng));
+  float sCos = cos(sAng); float sSin = sin(sAng);
+  dev->drawLine(cx, cy, cx + (r - 2)*sCos, cy + (r - 2)*sSin);
+  // Drawing a second line right next to it for "thickness"
+  dev->drawLine(cx + 1*cos(sAng+1.57), cy + 1*sin(sAng+1.57), 
+                cx + (r-2)*sCos, cy + (r-2)*sSin);
 
-  // Main Slender Triangle Hand
+  // B. Main Hand (Slender Triangle)
   float mAng = getSpeedAngle(speed);
   int hx = cx + (r - 2)*cos(mAng);
   int hy = cy + (r - 2)*sin(mAng);
-
   dev->drawTriangle(hx, hy, 
                     cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
                     cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
   dev->drawLine(cx, cy, hx, hy);
 
-  // 6. THE HUB
+  // 5. THE HUB
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
 }
+
 void setup() {
   Wire.begin(EXT_OLED_SDA, EXT_OLED_SCL);
   Wire.setClock(400000);
