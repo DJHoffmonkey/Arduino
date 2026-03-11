@@ -180,36 +180,37 @@ void drawAirspeed(Instrument &inst) {
   U8G2* dev = inst.screen;
   float speed = inst.val1; 
   float targetVal = inst.val2;
-  int cx = inst.x; int cy = inst.y; int r = inst.r; // cy is 99
+  int cx = inst.x; int cy = inst.y; int r = inst.r; 
   
   int tickInnerR = r - 4;
-  int numberR = r - 9;
+  int numberR = r - 10;      
   int innerDelineator = r - 14;
 
-  // 1. CLEAN FRAME
-//  dev->drawCircle(cx, cy, r);               
-//  dev->drawCircle(cx, cy, tickInnerR);       
 
-  // 2. SCALE MAPPING
+  // 2. THE "P-51 OFFSET" MAPPING
+  // Start (50) is at ~75 degrees (12:15 position)
+  // End (700) is at ~105 degrees (11:45 position) 
+  // Total sweep is roughly 330 degrees
   auto getSpeedAngle = [](float s) -> float {
     float angle;
     if (s <= 300) {
-      angle = 135 + (s / 300.0) * 180.0; // 0-300 covers 180 degrees
+      // 50 to 300: High precision sweep (approx 200 degrees)
+      angle = -75.0 + ((s - 50.0) / 250.0) * 200.0;
     } else {
-      angle = 315 + ((s - 300.0) / 400.0) * 90.0; // 300-700 covers 90 degrees
+      // 300 to 700: Compressed sweep (approx 130 degrees)
+      angle = 125.0 + ((s - 300.0) / 400.0) * 130.0;
     }
-    return angle * (PI / 180.0);
+    // Final rotation to align 50 at the 12:15 spot
+    return (angle - 15.0) * (PI / 180.0);
   };
 
-  // 3. DRAW ALL TICKS (Small and Large)
-  // Low speed: 10 unit increments
-  for (int s = 0; s <= 300; s += 10) {
+  // 3. DRAW TICKS
+  for (int s = 50; s <= 300; s += 10) {
     float a = getSpeedAngle((float)s);
-    int tLen = (s % 50 == 0) ? 0 : 2; // Shorter ticks for non-major units
+    int tLen = (s % 50 == 0) ? 0 : 3; 
     dev->drawLine(cx + (tickInnerR + tLen)*cos(a), cy + (tickInnerR + tLen)*sin(a), 
                   cx + r*cos(a), cy + r*sin(a));
   }
-  // High speed: 50 unit increments
   for (int s = 350; s <= 700; s += 50) {
     float a = getSpeedAngle((float)s);
     dev->drawLine(cx + tickInnerR*cos(a), cy + tickInnerR*sin(a), 
@@ -223,8 +224,11 @@ void drawAirspeed(Instrument &inst) {
     float a = getSpeedAngle((float)labels [i]);
     char buf [4];
     itoa(labels [i], buf, 10);
-    // Offset labels slightly so they don't hit the ticks
-    dev->drawStr(cx + numberR*cos(a) - 4, cy + numberR*sin(a) + 3, buf);
+    
+    // Fine-tune label centers
+    int tx = cx + numberR*cos(a) - 4; 
+    int ty = cy + numberR*sin(a) + 3;
+    dev->drawStr(tx, ty, buf);
   }
 
   // 5. THE HANDS
@@ -236,12 +240,13 @@ void drawAirspeed(Instrument &inst) {
   float mAng = getSpeedAngle(speed);
   int hx = cx + (r - 2)*cos(mAng);
   int hy = cy + (r - 2)*sin(mAng);
+
   dev->drawTriangle(hx, hy, 
                     cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
                     cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
   dev->drawLine(cx, cy, hx, hy);
 
-  // 6. THE HUB (Pivot only)
+  // 6. THE HUB
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
 }
