@@ -187,9 +187,8 @@ void drawAirspeed(Instrument &inst) {
 
   // 1. MAPPING (12:30 Start, 11:00 Finish, Maximum 300-700 Spacing)
   auto getSpeedAngle = [](float s) -> float {
-    float startPos = -60.0; // 12:30
+    float startPos = -60.0; 
     float angle;
-    
     if (s <= 300) {
       // 50 to 300: Sweeps 185 degrees
       angle = startPos + ((s - 50.0) / 250.0) * 185.0;
@@ -233,35 +232,36 @@ void drawAirspeed(Instrument &inst) {
     dev->drawStr(tx, ty, buf);
   }
 
-  // 4. THE MAIN HAND (Tapered Needle Shape)
+  // 4. THE BEEFY HAND (Broad Taper)
   if (speed >= 40.0) { 
     float mAng = getSpeedAngle(speed);
     
-    // Tip of the needle (at the ticks)
-    int tipX = cx + (r - 2) * cos(mAng);
-    int tipY = cy + (r - 2) * sin(mAng);
+    // Tip of the needle (Pushed slightly further out for clarity)
+    int tipX = cx + (r - 1) * cos(mAng);
+    int tipY = cy + (r - 1) * sin(mAng);
     
-    // The Base of the needle (at the hub)
-    // We create a base that is 4 pixels wide (2px on each side of center)
-    // 1.57 is roughly 90 degrees in radians to get the perpendicular offset
-    float baseAngleOffset = 0.18; // Adjust this to make the needle "fatter" or "thinner" at the hub
+    // Base Width: Increased to 0.45 radians for a very aggressive taper
+    // This creates a base nearly 6-7 pixels wide at the pivot
+    float baseWidth = 0.45; 
+    float baseDist = 4.0; // Starts the base slightly outside the hub disc
     
-    int baseRightX = cx + 3 * cos(mAng + baseAngleOffset);
-    int baseRightY = cy + 3 * sin(mAng + baseAngleOffset);
+    int b1x = cx + baseDist * cos(mAng + baseWidth);
+    int b1y = cy + baseDist * sin(mAng + baseWidth);
     
-    int baseLeftX = cx + 3 * cos(mAng - baseAngleOffset);
-    int baseLeftY = cy + 3 * sin(mAng - baseAngleOffset);
+    int b2x = cx + baseDist * cos(mAng - baseWidth);
+    int b2y = cy + baseDist * sin(mAng - baseWidth);
     
-    // Draw the tapered body
-    dev->drawTriangle(tipX, tipY, baseRightX, baseRightY, baseLeftX, baseLeftY);
+    // Draw the main heavy body
+    dev->drawTriangle(tipX, tipY, b1x, b1y, b2x, b2y);
     
-    // Draw a single line spine to ensure the tip remains 1px sharp
+    // Fill in the hub-to-base gap for a solid "sword" look
     dev->drawLine(cx, cy, tipX, tipY);
+    dev->drawLine(b1x, b1y, b2x, b2y); // Closes the base for better fill
   }
-  
-  // 5. THE HUB (Pivot Point)
-  dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
-  dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
+
+  // 5. THE HUB
+  dev->setDrawColor(0); dev->drawDisc(cx, cy, 3); // Slightly larger black disc to seat the beefy needle
+  dev->setDrawColor(1); dev->drawCircle(cx, cy, 3);
 }
 
 void setup() {
