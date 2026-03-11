@@ -44,7 +44,7 @@ bool manualMode = false, insaneModeActive = false, txMax = false, lastBootState 
 unsigned long buttonDownTime = 0, lastRequest = 0, lastDataTime = 0, lowVoltTimer = 0, lastBroadcast = 0;
 
 // Flight Data
-float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll = 0, heading = 0, altitude = 0;
+float vBat = 16.0, currentG = 1.0, roll = 0, pitch = 0, lastPitch = 0, lastRoll = 0, heading = 0, altitude = 0, baro = 0;
 float filteredX = 0, filteredY = 0;
 uint16_t armSwitchValue = 1000;
 bool sessionHasMSP = false, currentlyReceiving = false, showLowBatText = false, isBenchMode = true;
@@ -88,52 +88,52 @@ void readMSPResponse() {
       sessionHasMSP = true; 
       lastDataTime = millis();
 
-      if (cmd == 108) { // ATTITUDE
-        int16_t angX = toAndFromFC.read() | (toAndFromFC.read() << 8); 
-        int16_t angY = toAndFromFC.read() | (toAndFromFC.read() << 8); 
-        int16_t head = toAndFromFC.read() | (toAndFromFC.read() << 8); 
+      // --- THE CORE FIX: CAPTURE ENTIRE PAYLOAD FIRST ---
+      uint8_t p [size]; 
+      for (int i = 0; i < size; i++) {
+        unsigned long startWait = millis();
+        while (toAndFromFC.available() == 0 && millis() - startWait < 15); 
+        p [i] = toAndFromFC.read();
+      }
+      
+      // Consume the 1-byte checksum that always follows the payload
+      while (toAndFromFC.available() == 0); 
+      toAndFromFC.read(); 
+
+      // --- NOW EXTRACT DATA FROM THE CAPTURED BYTES ---
+      if (cmd == 108 && size >= 6) { // ATTITUDE
+        int16_t angX = p [0] | (p [1] << 8); 
+        int16_t angY = p [2] | (p [3] << 8); 
+        int16_t head = p [4] | (p [5] << 8); 
         roll = angX / 10.0; 
         pitch = angY / 10.0; 
         heading = (float)head;
-        for (int i = 0; i < size - 6; i++) { toAndFromFC.read(); }
       } 
-      else if (cmd == 109) { // ALTITUDE
-        int32_t altCm = (int32_t)toAndFromFC.read() | ((int32_t)toAndFromFC.read() << 8) | ((int32_t)toAndFromFC.read() << 16) | ((int32_t)toAndFromFC.read() << 24);
-        altitude = altCm * 0.0328084; 
-        for (int i = 0; i < size - 4; i++) { toAndFromFC.read(); }
+      else if (cmd == 109 && size >= 4) { // ALTITUDE
+        // for(int i=0; i<4; i++) {
+        //   console.print(p [i]); console.print(" ");
+        // }
+        int32_t altCm = (int32_t)p [0] | ((int32_t)p [1] << 8) | ((int32_t)p [2] << 16) | ((int32_t)p [3] << 24);
+        altitude = (float)altCm * 0.0328084; 
+        baro = 29.92;
       }
-      else if (cmd == 102) { // RAW IMU
-        for (int i = 0; i < 4; i++) { toAndFromFC.read(); }
-        int16_t az = toAndFromFC.read() | (toAndFromFC.read() << 8); 
+      else if (cmd == 102 && size >= 6) { // RAW IMU
+        int16_t az = p [4] | (p [5] << 8); 
         currentG = (((float)az / ACCEL_1G) * 0.1) + (currentG * 0.9);
-        for (int i = 0; i < size - 6; i++) { toAndFromFC.read(); }
       } 
-      else if (cmd == 110) { // VOLTS
-        vBat = ((toAndFromFC.read() / 10.0) * 0.2) + (vBat * 0.8);
-        for (int i = 0; i < size - 1; i++) { toAndFromFC.read(); }
+      else if (cmd == 110 && size >= 1) { // VOLTS
+        vBat = ((p [0] / 10.0) * 0.2) + (vBat * 0.8);
       } 
       else if (cmd == 105) { // RC CHANNELS
-        for (int i = 0; i < 8; i++) { toAndFromFC.read(); }
-        for (int i = 4; i < ARM_RC_CHANNEL; i++) { 
-          toAndFromFC.read(); 
-          toAndFromFC.read(); 
+        int armIdx = (ARM_RC_CHANNEL - 1) * 2; // Channel 13 = Index 24
+        // Only process if the packet is actually long enough to contain our channel
+        if (size >= (armIdx + 2)) {
+          armSwitchValue = p [armIdx] | (p [armIdx + 1] << 8);
         }
-        armSwitchValue = toAndFromFC.read() | (toAndFromFC.read() << 8); 
-        int bytesConsumed = 8 + ((ARM_RC_CHANNEL - 4) * 2) + 2; 
-        for (int i = 0; i < (size - bytesConsumed); i++) { toAndFromFC.read(); }
       } 
-      else { 
-        for (int i = 0; i < size; i++) { toAndFromFC.read(); }
-      }
-
-      // THE FIX: Discard the 1-byte checksum that follows every payload
-      if (toAndFromFC.available() > 0) {
-        toAndFromFC.read();
-      }
     }
   }
 }
-
 void setup() {
   // Disable internal system logging to prevent UART chatter
   esp_log_level_set("*", ESP_LOG_NONE);
@@ -273,6 +273,7 @@ void loop() {
       sendMSPRequest(105); 
       sendMSPRequest(102); 
       sendMSPRequest(110); 
+      sendMSPRequest(151); 
       lastRequest = millis(); 
     }
     readMSPResponse();
@@ -344,6 +345,10 @@ void loop() {
     
     toSlave.print("GFO:"); 
     toSlave.print(currentG);
+    toSlave.print(",");
+
+    toSlave.print("BAR:"); 
+    toSlave.print(baro, 1);
     toSlave.print(",");
     
     toSlave.print("WAR:"); 

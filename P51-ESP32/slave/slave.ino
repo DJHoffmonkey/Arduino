@@ -38,7 +38,7 @@ CockpitLayout cockpit = {
   {"ALTIMETER", P51_ALTIMETER, 0.0, 0.0, 64, 32, 30, &u8g2e2}
 };
 
-float roll = 0.0, pitch = 0.0, heading = 0.0, altitude = 0.0, vBat = 0.0, currentG = 0.0;
+float roll = 0.0, pitch = 0.0, heading = 0.0, altitude = 0.0, vBat = 0.0, currentG = 0.0, baro = 29.9;
 bool warActive = false;
 
 // --- DRAWING FUNCTIONS ---
@@ -131,6 +131,25 @@ void drawAltimeter(Instrument &inst) {
     dev->drawStr(tx, ty, label);
   }
 
+  // --- 3.5 KOLLSMAN WINDOW (Pressure Setting) ---
+  // Positioned at 3 o'clock, inside the inner delineator
+  int kx = cx + 8; // Shifted right
+  int ky = cy - 4; // Centered vertically on the 3 o'clock line
+  
+  dev->setDrawColor(0);          // First, clear a black box so the hands don't bleed through
+  dev->drawBox(kx, ky, 16, 9);   
+  dev->setDrawColor(1);          // Back to white
+  dev->drawFrame(kx, ky, 16, 9); // The window frame
+  
+  dev->setFont(u8g2_font_04b_03_tr);
+
+  // Inside drawAltimeter on the Slave
+  char baroBuf[6];
+  // Convert val2 (the baro float) to a string: 4 wide, 1 decimal place
+  dtostrf(inst.val2, 4, 1, baroBuf);
+
+  dev->drawStr(kx + 2, ky + 7, baroBuf); // The baro setting
+  
   // --- 4. THE HANDS (Keep your current 5px/3px code) ---
   
   // A. 10,000ft Hand
@@ -201,6 +220,7 @@ void readMasterData() {
     else if (tag == "ALT") altitude = value;
     else if (tag == "BAT") vBat = value;
     else if (tag == "GFO") currentG = value;
+    else if (tag == "BAR") baro = value;
     else if (tag == "WAR") warActive = (value > 0.5);
     
     // Garbage Disposal
@@ -226,6 +246,7 @@ void loop() {
     // 2. Update Altimeter
     u8g2e2.clearBuffer();
     cockpit.altimeter.val1 = altitude;
+    cockpit.altimeter.val2 = baro;
     drawAltimeter(cockpit.altimeter);
     u8g2e2.sendBuffer();
 
