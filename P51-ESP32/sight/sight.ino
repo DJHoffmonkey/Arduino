@@ -258,17 +258,25 @@ void loop() {
   // DATA ACQUISITION (LOCKED MODE)
   if (isBenchMode) {
     float t = millis() / 1000.0;
+    
+    // Physics Sweeps
     pitch = sin(t * 0.5) * 20.0; 
     roll = cos(t * 0.8) * 45.0; 
-    altitude = 2500 + (sin(t * 0.1) * 2000); // Swings from 500ft to 4500ft
+    
+    // Altimeter: Swings from 500ft to 7500ft
+    altitude = 4000 + (sin(t * 0.2) * 3500); 
+
+    // Airspeed: Swings from 50mph to 700mph
+    // We use a slower sine wave so you can study the non-linear compression
+    airSpeed = 375 + (sin(t * 0.15) * 325); 
+
     heading += 0.5; 
-    if (heading >= 360) {
-      heading = 0;
-    }
+    if (heading >= 360) heading = 0;
+    
     vBat = 16.2;
     currentG = 1.0;
     currentlyReceiving = false; 
-  } 
+  }
   else {
     // STAGGERED REQUESTS (Prevents Buffer Collisions)
     static int mspStep = 0;

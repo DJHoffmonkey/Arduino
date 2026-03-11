@@ -179,27 +179,23 @@ void drawAltimeter(Instrument &inst) {
 void drawAirspeed(Instrument &inst) {
   U8G2* dev = inst.screen;
   float speed = inst.val1; 
-  float targetVal = inst.val2;
   int cx = inst.x; int cy = inst.y; int r = inst.r; 
   
   int tickInnerR = r - 4;
-  int numberR = r - 10;      
+  int numberR = r - 11;      
   int innerDelineator = r - 14;
 
-  // 1. MAPPING (Shifted for 12:45 start)
+  // 1. MAPPING (12:30 Start, 11:00 Finish, Maximum 300-700 Spacing)
   auto getSpeedAngle = [](float s) -> float {
+    float startPos = -60.0; // 12:30
     float angle;
-    // We want the gap to be at the top. 
-    // -90 is 12 o'clock. 0 is 3 o'clock.
-    // To get 12:45, we start at roughly -45 degrees.
-    float startPos = -45.0; 
     
     if (s <= 300) {
-      // 50 to 300: High precision (approx 210 degrees sweep)
-      angle = startPos + ((s - 50.0) / 250.0) * 210.0;
+      // 50 to 300: Sweeps 185 degrees
+      angle = startPos + ((s - 50.0) / 250.0) * 185.0;
     } else {
-      // 300 to 700: Compressed (approx 110 degrees sweep)
-      angle = (startPos + 210.0) + ((s - 300.0) / 400.0) * 110.0;
+      // 300 to 700: Sweeps 145 degrees (Stretched for better spacing)
+      angle = (startPos + 185.0) + ((s - 300.0) / 400.0) * 145.0;
     }
     return angle * (PI / 180.0);
   };
@@ -219,39 +215,39 @@ void drawAirspeed(Instrument &inst) {
 
   // 3. DRAW LABELS
   dev->setFont(u8g2_font_04b_03_tr);
-  int labels [10] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
+  int labels[] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
   for (int i = 0; i < 10; i++) {
-    float a = getSpeedAngle((float)labels [i]);
-    char buf [4];
-    itoa(labels [i], buf, 10);
+    float a = getSpeedAngle((float)labels[i]);
+    char buf[4];
+    itoa(labels[i], buf, 10);
     
-    // Geometry correction for text centering
-    int tx = cx + numberR*cos(a) - ( (labels [i] >= 100) ? 6 : 3 ); 
+    int tx = cx + numberR*cos(a) - 3; 
     int ty = cy + numberR*sin(a) + 3;
+    
+    // Position-specific nudges to clear the ticks
+    if (labels[i] == 700) { tx -= 3; ty -= 2; } 
+    if (labels[i] == 600) { tx -= 4; ty += 1; }
+    if (labels[i] == 500) { tx -= 4; }           
+    if (labels[i] == 50)  { tx += 3; ty -= 1; } 
+
     dev->drawStr(tx, ty, buf);
   }
 
-  // 4. THE HANDS
-  
-  // A. Secondary Hand (Increased Visibility)
-  // Drawn as a thin "needle" line but with a tiny 1px offset to make it 2px wide
-  float sAng = getSpeedAngle(targetVal);
-  float sCos = cos(sAng); float sSin = sin(sAng);
-  dev->drawLine(cx, cy, cx + (r - 2)*sCos, cy + (r - 2)*sSin);
-  // Drawing a second line right next to it for "thickness"
-  dev->drawLine(cx + 1*cos(sAng+1.57), cy + 1*sin(sAng+1.57), 
-                cx + (r-2)*sCos, cy + (r-2)*sSin);
+  // 4. THE MAIN HAND (Thick Triangle)
+  // Ensure we don't draw the needle if speed is logically "zero" or way off-scale
+  if (speed >= 40.0) { 
+    float mAng = getSpeedAngle(speed);
+    int hx = cx + (r - 2)*cos(mAng);
+    int hy = cy + (r - 2)*sin(mAng);
+    
+    // Needle body
+    dev->drawTriangle(hx, hy, 
+                      cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
+                      cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
+    dev->drawLine(cx, cy, hx, hy); // Center spine for sharpness
+  }
 
-  // B. Main Hand (Slender Triangle)
-  float mAng = getSpeedAngle(speed);
-  int hx = cx + (r - 2)*cos(mAng);
-  int hy = cy + (r - 2)*sin(mAng);
-  dev->drawTriangle(hx, hy, 
-                    cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
-                    cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
-  dev->drawLine(cx, cy, hx, hy);
-
-  // 5. THE HUB
+  // 5. THE HUB (Pivot Point)
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
 }
