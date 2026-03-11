@@ -47,42 +47,55 @@ bool warActive = false;
 
 void drawHorizon(Instrument &inst) {
   U8G2* dev = inst.screen;
-  float rollRad = inst.val1 * (PI / 180.0);
-  // Pitch mapping: adjust -15, 15 to change how "sensitive" the bar is
-  int pitchOff = map(constrain(inst.val2, -30, 30), -30, 30, -15, 15);
+  
+  // 1. MATH NUDGE (Essential for 180 deg stability)
+  float rollDeg = inst.val1;
+  if (fmod(abs(rollDeg), 90.0) < 0.1) rollDeg += 0.05; 
+  float rollRad = rollDeg * (PI / 180.0);
 
-  // 1. BANK SCALE (Internal Ticks)
-  // Drawn from -60 to +60 degrees
+  // 2. PITCH MAPPING
+  int pitchOff = map(constrain(inst.val2, -30, 30), -30, 30, -20, 20);
+
+  // 3. BANK SCALE (Internal Ticks)
   for (int a = -60; a <= 60; a += 10) {
     float rad = (a - 90) * (PI / 180.0);
-    int rOut = inst.r - 1; // Flush with your stencil edge
-    int rIn = (a % 30 == 0) ? inst.r - 7 : inst.r - 4; // Long ticks at 30/60
+    int rOut = inst.r - 1;
+    int rIn = (a % 30 == 0) ? inst.r - 7 : inst.r - 4;
     dev->drawLine(inst.x + rIn * cos(rad), inst.y + rIn * sin(rad),
                   inst.x + rOut * cos(rad), inst.y + rOut * sin(rad));
   }
 
-  // 2. MOVING HORIZON BAR
-  // Long enough to stay visible behind the circular mask during rolls
+  // 4. MOVING HORIZON BAR
   float cosR = cos(rollRad);
   float sinR = sin(rollRad);
-  int xL = 38 * cosR;
-  int yL = 38 * sinR;
-  dev->drawLine(inst.x - xL, inst.y - yL + pitchOff, 
-                inst.x + xL, inst.y + yL + pitchOff);
+  
+  // Half-length of 45 is the sweet spot for a 128x64 display
+  float xL = 45.0 * cosR;
+  float yL = 45.0 * sinR;
 
-  // 3. THE "MUSHROOM" PEDESTAL (Bottom Mask)
-  // Instead of a solid triangle, we use a narrower base to look like the real gauge
-  dev->drawBox(inst.x - 2, inst.y + 10, 5, 22); // The "stem"
-  dev->drawDisc(inst.x, inst.y + 10, 4, U8G2_DRAW_ALL); // The rounded top of the pedestal
+  int x1 = inst.x - xL;
+  int y1 = inst.y - yL + pitchOff;
+  int x2 = inst.x + xL;
+  int y2 = inst.y + yL + pitchOff;
 
-  // 4. FIXED AIRCRAFT REFERENCE (The "W")
-  // Drawing the yellow-tipped wings and center pointer
-  int ay = inst.y + 8; // Vertical position of the reference
+  // Draw the bar with coordinate safety to prevent the "corner-stick"
+  dev->drawLine(
+    constrain(x1, 0, 127), constrain(y1, 0, 63),
+    constrain(x2, 0, 127), constrain(y2, 0, 63)
+  );
+
+  // 5. THE "MUSHROOM" PEDESTAL (Bottom Mask)
+  dev->drawBox(inst.x - 2, inst.y + 10, 5, 22);
+  dev->drawDisc(inst.x, inst.y + 10, 4, U8G2_DRAW_ALL);
+
+  // 6. FIXED AIRCRAFT REFERENCE (Restored "W" + Pointer)
+  // First set of wings and center pointer
+  int ay = inst.y + 8; 
   dev->drawHLine(inst.x - 16, ay, 10); // Left wing
   dev->drawHLine(inst.x + 6, ay, 10);  // Right wing
   dev->drawVLine(inst.x, ay - 6, 4);   // The top center "needle"
   
-  // Fixed "W" Aircraft Reference
+  // The "W" Frame and Second set of Wings
   dev->drawHLine(inst.x - 15, inst.y + 5, 10);
   dev->drawHLine(inst.x + 5, inst.y + 5, 10);
   dev->drawFrame(inst.x - 2, inst.y + 3, 5, 5);
@@ -90,13 +103,10 @@ void drawHorizon(Instrument &inst) {
 
 void drawAltimeter(Instrument &inst) {
   U8G2* dev = inst.screen;
-  float alt = inst.val1;
-  // Safety: prevent negative altitude math glitches
-  if (alt < 0) alt = 0; 
-
+  float alt = (inst.val1 < 0) ? 0 : inst.val1; // Clamp negative altitude
   int cx = inst.x; int cy = inst.y; int r = inst.r;
   
-  // RADIUS DEFINITIONS
+  // SCALED RADIUS DEFINITIONS
   int tickInnerR = r - 4;       
   int numberR = r - 9;          
   int innerDelineator = r - 14; 
@@ -122,7 +132,7 @@ void drawAltimeter(Instrument &inst) {
     dev->drawLine(cx + tickInnerR*cos(angle), cy + tickInnerR*sin(angle), 
                   cx + r*cos(angle), cy + r*sin(angle));
     
-    char label[4]; 
+    char label[4];
     itoa(i * 5, label, 10); 
     int tx = cx + numberR*cos(angle) - (i * 5 >= 10 ? 4 : 2); 
     int ty = cy + numberR*sin(angle) + 3;
@@ -141,27 +151,31 @@ void drawAltimeter(Instrument &inst) {
   // A. Main Precision Hand (Beefy Sword)
   // One rotation = 100 feet. 
   float a100 = (fmod(alt, 100.0) * 3.6) - 90.0;
+  // Safety: Nudge 12 o'clock slightly to avoid "perfect" vertical math errors
+  if (abs(fmod(a100, 360.0) + 90.0) < 0.1) a100 += 0.05; 
+  
   float rad100 = a100 * (PI / 180.0);
   
-  // Calculate tip and base points
-  int tipX = cx + (r - 1) * cos(rad100);
-  int tipY = cy + (r - 1) * sin(rad100);
+  // Calculate and Clamping coordinates
+  auto clampX = [](int x) { return constrain(x, 0, 127); };
+  auto clampY = [](int y) { return constrain(y, 0, 63); };
+
+  int tipX = clampX(cx + (r - 1) * cos(rad100));
+  int tipY = clampY(cy + (r - 1) * sin(rad100));
   
   float baseWidth = 0.40; 
-  // We use round() to ensure the integer conversion doesn't freak out at 12 o'clock
-  int b1x = cx + round(4.0 * cos(rad100 + baseWidth)); 
-  int b1y = cy + round(4.0 * sin(rad100 + baseWidth));
-  int b2x = cx + round(4.0 * cos(rad100 - baseWidth)); 
-  int b2y = cy + round(4.0 * sin(rad100 - baseWidth));
+  int b1x = clampX(cx + (4.0 * cos(rad100 + baseWidth))); 
+  int b1y = clampY(cy + (4.0 * sin(rad100 + baseWidth)));
+  int b2x = clampX(cx + (4.0 * cos(rad100 - baseWidth))); 
+  int b2y = clampY(cy + (4.0 * sin(rad100 - baseWidth)));
   
-  // DRAWING ORDER: Drawing the line first helps "anchor" the triangle math
   dev->drawLine(cx, cy, tipX, tipY);
   dev->drawTriangle(tipX, tipY, b1x, b1y, b2x, b2y);
 
   // B. Thousands Hand (Thin Sweep)
   float a1k = (alt * 0.36) - 90.0; 
   float rad1k = a1k * (PI / 180.0);
-  dev->drawLine(cx, cy, cx + (innerDelineator-2)*cos(rad1k), cy + (innerDelineator-2)*sin(rad1k));
+  dev->drawLine(cx, cy, clampX(cx + (innerDelineator-2)*cos(rad1k)), clampY(cy + (innerDelineator-2)*sin(rad1k)));
 
   // 5. CENTER HUB
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
