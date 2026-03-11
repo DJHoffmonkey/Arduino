@@ -233,20 +233,32 @@ void drawAirspeed(Instrument &inst) {
     dev->drawStr(tx, ty, buf);
   }
 
-  // 4. THE MAIN HAND (Thick Triangle)
-  // Ensure we don't draw the needle if speed is logically "zero" or way off-scale
+  // 4. THE MAIN HAND (Tapered Needle Shape)
   if (speed >= 40.0) { 
     float mAng = getSpeedAngle(speed);
-    int hx = cx + (r - 2)*cos(mAng);
-    int hy = cy + (r - 2)*sin(mAng);
     
-    // Needle body
-    dev->drawTriangle(hx, hy, 
-                      cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
-                      cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
-    dev->drawLine(cx, cy, hx, hy); // Center spine for sharpness
+    // Tip of the needle (at the ticks)
+    int tipX = cx + (r - 2) * cos(mAng);
+    int tipY = cy + (r - 2) * sin(mAng);
+    
+    // The Base of the needle (at the hub)
+    // We create a base that is 4 pixels wide (2px on each side of center)
+    // 1.57 is roughly 90 degrees in radians to get the perpendicular offset
+    float baseAngleOffset = 0.18; // Adjust this to make the needle "fatter" or "thinner" at the hub
+    
+    int baseRightX = cx + 3 * cos(mAng + baseAngleOffset);
+    int baseRightY = cy + 3 * sin(mAng + baseAngleOffset);
+    
+    int baseLeftX = cx + 3 * cos(mAng - baseAngleOffset);
+    int baseLeftY = cy + 3 * sin(mAng - baseAngleOffset);
+    
+    // Draw the tapered body
+    dev->drawTriangle(tipX, tipY, baseRightX, baseRightY, baseLeftX, baseLeftY);
+    
+    // Draw a single line spine to ensure the tip remains 1px sharp
+    dev->drawLine(cx, cy, tipX, tipY);
   }
-
+  
   // 5. THE HUB (Pivot Point)
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
   dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
