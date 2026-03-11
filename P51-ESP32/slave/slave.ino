@@ -125,8 +125,7 @@ void drawDirectionalGyro(Instrument &inst) {
   dev->drawVLine(cx, cy + 7, 3);
 
   // TEXT (Positioned relative to new cy)
-  dev->drawStr(cx - 17, cy + 16, "DIR. GYRO");
-  dev->drawStr(cx - 16, cy + 24, "AN 5735-1A");
+  dev->drawStr(cx - 10, cy + 16, "GYRO");
 }
 
 void drawAltimeter(Instrument &inst) {
