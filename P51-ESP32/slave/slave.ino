@@ -91,85 +91,77 @@ void drawHorizon(Instrument &inst) {
 void drawAltimeter(Instrument &inst) {
   U8G2* dev = inst.screen;
   float alt = inst.val1;
+  // Safety: prevent negative altitude math glitches
+  if (alt < 0) alt = 0; 
+
   int cx = inst.x; int cy = inst.y; int r = inst.r;
   
-  // SCALED RADIUS DEFINITIONS
-  int tickInnerR = r - 4;       // Tightened for smaller dial
-  int numberR = r - 9;          // Where the numbers are centered
-  int innerDelineator = r - 14; // The final circle inside the numbers
+  // RADIUS DEFINITIONS
+  int tickInnerR = r - 4;       
+  int numberR = r - 9;          
+  int innerDelineator = r - 14; 
 
-  // 1. THE TICK-ZONE SHADING (10% Dither)
+  // 1. THE TICK-ZONE SHADING
   for (int y = -r; y <= r; y++) {
     for (int x = -r; x <= r; x++) {
       int distSq = x*x + y*y;
       if (distSq < (r*r) && distSq > (tickInnerR * tickInnerR)) {
-        if ((x % 3 == 0) && (y % 3 == 0)) { 
-          dev->drawPixel(cx + x, cy + y);
-        }
+        if ((x % 3 == 0) && (y % 3 == 0)) dev->drawPixel(cx + x, cy + y);
       }
     }
   }
 
   // 2. THE INNER BORDERS
-  dev->drawCircle(cx, cy, tickInnerR);      // Line separating ticks from numbers
-  dev->drawCircle(cx, cy, innerDelineator); // Line separating numbers from the center
+  dev->drawCircle(cx, cy, tickInnerR);      
+  dev->drawCircle(cx, cy, innerDelineator); 
 
   // 3. TICKS AND NUMBERS
   dev->setFont(u8g2_font_04b_03_tr);
   for (int i = 0; i < 10; i++) {
     float angle = (i * 36 - 90) * (PI / 180.0);
-    
-    // Ticks (drawn over the 10% shading)
     dev->drawLine(cx + tickInnerR*cos(angle), cy + tickInnerR*sin(angle), 
                   cx + r*cos(angle), cy + r*sin(angle));
     
-    // Numbers (now in a clean black "Number Ring")
-    char label[2]; 
-    itoa(i, label, 10);
-    int tx = cx + numberR*cos(angle) - 2; 
+    char label[4]; 
+    itoa(i * 5, label, 10); 
+    int tx = cx + numberR*cos(angle) - (i * 5 >= 10 ? 4 : 2); 
     int ty = cy + numberR*sin(angle) + 3;
     dev->drawStr(tx, ty, label);
   }
 
- // --- 3.5 KOLLSMAN WINDOW (Pressure Setting) ---
-  // Positioned at 3 o'clock, inside the inner delineator
-  int kx = cx + 6;  // Shifted right
-  int ky = cy - 4;  // Centered vertically on the 3 o'clock line
-  dev->setDrawColor(0);
-  dev->drawBox(kx, ky, 14, 8);   
-  dev->setDrawColor(1);
-  dev->drawFrame(kx, ky, 14, 8); 
-  dev->setFont(u8g2_font_04b_03_tr);
+  // --- 3.5 KOLLSMAN WINDOW ---
+  int kx = cx + 6; int ky = cy - 4;  
+  dev->setDrawColor(0); dev->drawBox(kx, ky, 14, 8);   
+  dev->setDrawColor(1); dev->drawFrame(kx, ky, 14, 8); 
+  char baroBuf[6]; dtostrf(inst.val2, 4, 1, baroBuf);
+  dev->drawStr(kx + 1, ky + 6, baroBuf);
 
-  char baroBuf[6];
-  // Convert val2 (the baro float) to a string: 4 wide, 1 decimal place
-  dtostrf(inst.val2, 4, 1, baroBuf);
-  dev->drawStr(kx + 1, ky + 6, baroBuf);  // The baro setting
+  // 4. THE HANDS
 
-  // 4. THE HANDS (P51 Complex Style)
-  
-  // A. 10,000ft Hand
-  float a10k = (fmod(alt, 100000.0) * 0.0036) - 90.0;
-  float rad10k = a10k * (PI / 180.0);
-  int x10k = cx + (innerDelineator-2)*cos(rad10k);
-  int y10k = cy + (innerDelineator-2)*sin(rad10k);
-  dev->drawLine(cx, cy, x10k, y10k); // simplified the "thick" line for smaller pixels
-  dev->drawDisc(x10k, y10k, 2);
-
-  // B. 1,000ft Hand (Tapered Wedge)
-  float a1k = (fmod(alt, 10000.0) * 0.036) - 90.0;
-  float rad1k = a1k * (PI / 180.0);
-  int hx = cx + (innerDelineator+1)*cos(rad1k);
-  int hy = cy + (innerDelineator+1)*sin(rad1k);
-  dev->drawTriangle(hx, hy, 
-                    cx + (innerDelineator-3)*cos(rad1k + 0.25), cy + (innerDelineator-3)*sin(rad1k + 0.25), 
-                    cx + (innerDelineator-3)*cos(rad1k - 0.25), cy + (innerDelineator-3)*sin(rad1k - 0.25));
-  dev->drawLine(cx, cy, hx, hy);
-
-  // C. 100ft Hand (Long Sweep)
-  float a100 = (fmod(alt, 1000.0) * 0.36) - 90.0;
+  // A. Main Precision Hand (Beefy Sword)
+  // One rotation = 100 feet. 
+  float a100 = (fmod(alt, 100.0) * 3.6) - 90.0;
   float rad100 = a100 * (PI / 180.0);
-  dev->drawLine(cx, cy, cx + (r-3)*cos(rad100), cy + (r-3)*sin(rad100));
+  
+  // Calculate tip and base points
+  int tipX = cx + (r - 1) * cos(rad100);
+  int tipY = cy + (r - 1) * sin(rad100);
+  
+  float baseWidth = 0.40; 
+  // We use round() to ensure the integer conversion doesn't freak out at 12 o'clock
+  int b1x = cx + round(4.0 * cos(rad100 + baseWidth)); 
+  int b1y = cy + round(4.0 * sin(rad100 + baseWidth));
+  int b2x = cx + round(4.0 * cos(rad100 - baseWidth)); 
+  int b2y = cy + round(4.0 * sin(rad100 - baseWidth));
+  
+  // DRAWING ORDER: Drawing the line first helps "anchor" the triangle math
+  dev->drawLine(cx, cy, tipX, tipY);
+  dev->drawTriangle(tipX, tipY, b1x, b1y, b2x, b2y);
+
+  // B. Thousands Hand (Thin Sweep)
+  float a1k = (alt * 0.36) - 90.0; 
+  float rad1k = a1k * (PI / 180.0);
+  dev->drawLine(cx, cy, cx + (innerDelineator-2)*cos(rad1k), cy + (innerDelineator-2)*sin(rad1k));
 
   // 5. CENTER HUB
   dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
