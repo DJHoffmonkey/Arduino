@@ -16,7 +16,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2e1(U8G2_R0, U8X8_PIN_NONE, EXT_OLED_SCL,
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2e2(U8G2_R1, U8X8_PIN_NONE, EXT_OLED_SCL, EXT_OLED_SDA);
 U8G2_SSD1306_72X40_ER_F_SW_I2C u8g2bi(U8G2_R0, U8X8_PIN_NONE, BUILT_IN_OLED_SCL, BUILT_IN_OLED_SDA);
 
-enum GaugeType { P51_HORIZON, P51_ALTIMETER, P51_AIRSPEED };
+enum GaugeType { P51_HORIZON, P51_ALTIMETER, P51_AIRSPEED, P51_GYRO };
 
 struct Instrument {
   const char* label;
@@ -27,18 +27,22 @@ struct Instrument {
   U8G2* screen;    
 };
 
+// Update your struct to include the Gyro
 struct CockpitLayout {
-  Instrument horizon;
-  Instrument altimeter;
-  Instrument airspeed;
+  Instrument horizon;   // Screen 1 (Right side of landscape)
+  Instrument gyro;      // Screen 1 (Left side of landscape)
+  Instrument altimeter; // Screen 2 (Top of portrait)
+  Instrument airspeed;  // Screen 2 (Bottom of portrait)
 };
 
-// Label, Type, Val1, Val2, X, Y, Radius, Screen
 CockpitLayout cockpit = {
-  {"HORIZON",   P51_HORIZON,   0.0, 0.0, 64, 32, 30, &u8g2e1},
-  {"ALTIMETER", P51_ALTIMETER, 0.0, 0.0, 32, 22, 26, &u8g2e2}, // TOP
-  {"AIRSPEED",  P51_AIRSPEED,  0.0, 0.0, 32, 99, 26, &u8g2e2}  // BOTTOM (LIFTED)
+  // Label, Type, Val1, Val2, X, Y, Radius, Screen
+  {"HORIZON",   P51_HORIZON,   0.0, 0.0, 102, 32, 25, &u8g2e1}, // Nudged Right, R to 25
+  {"GYRO",      P51_GYRO,      0.0, 0.0, 20, 34, 20, &u8g2e1},  // Far Left (X20) and Down (Y34)
+  {"ALTIMETER", P51_ALTIMETER, 0.0, 0.0, 32, 22, 26, &u8g2e2}, 
+  {"AIRSPEED",  P51_AIRSPEED,  0.0, 0.0, 32, 99, 26, &u8g2e2}
 };
+
 
 float roll = 0.0, pitch = 0.0, heading = 0.0, altitude = 0.0, vBat = 0.0, currentG = 0.0, baro = 29.9, airSpeed = 0;
 bool warActive = false;
@@ -48,7 +52,7 @@ bool warActive = false;
 void drawHorizon(Instrument &inst) {
   U8G2* dev = inst.screen;
   
-  // 1. MATH NUDGE (Essential for 180 deg stability)
+  // 1. MATH NUDGE (Essential for stability at 180 deg)
   float rollDeg = inst.val1;
   if (fmod(abs(rollDeg), 90.0) < 0.1) rollDeg += 0.05; 
   float rollRad = rollDeg * (PI / 180.0);
@@ -65,46 +69,98 @@ void drawHorizon(Instrument &inst) {
                   inst.x + rOut * cos(rad), inst.y + rOut * sin(rad));
   }
 
-  // 4. MOVING HORIZON BAR
+  // 4. MOVING HORIZON BAR (2-Pixel Thickness)
   float cosR = cos(rollRad);
   float sinR = sin(rollRad);
-  
   float xL = 45.0 * cosR;
   float yL = 45.0 * sinR;
 
-  int x1 = inst.x - xL;
-  int y1 = inst.y - yL + pitchOff;
-  int x2 = inst.x + xL;
-  int y2 = inst.y + yL + pitchOff;
+  // Draw two lines slightly offset for thickness
+  for (int i = 0; i <= 1; i++) {
+    int x1 = inst.x - xL;
+    int y1 = inst.y - yL + pitchOff + i;
+    int x2 = inst.x + xL;
+    int y2 = inst.y + yL + pitchOff + i;
+    dev->drawLine(constrain(x1, 0, 127), constrain(y1, 0, 63),
+                  constrain(x2, 0, 127), constrain(y2, 0, 63));
+  }
 
-  // Draw the bar with coordinate safety to prevent the "corner-stick"
-  dev->drawLine(
-    constrain(x1, 0, 127), constrain(y1, 0, 63),
-    constrain(x2, 0, 127), constrain(y2, 0, 63)
-  );
-
-  // 5. THE TRIDENT PEDESTAL (Replacing Mushroom/W)
-  // Vertical Stem
-  dev->drawVLine(inst.x, inst.y + 11, 18); 
+  // 5. THE TRIDENT PEDESTAL (Double-Thick)
+  // Vertical Stem (2 pixels wide)
+  dev->drawBox(inst.x - 1, inst.y + 11, 2, 18); 
   
-  // The Curved Cradle Arms
-  // Left Arm
+  // Left Arm (Double-strike)
   dev->drawLine(inst.x, inst.y + 13, inst.x - 7, inst.y + 9);
-  dev->drawHLine(inst.x - 10, inst.y + 9, 3);
+  dev->drawLine(inst.x, inst.y + 14, inst.x - 7, inst.y + 10);
+  dev->drawBox(inst.x - 10, inst.y + 9, 3, 2); // Thicker horizontal tip
   
-  // Right Arm
+  // Right Arm (Double-strike)
   dev->drawLine(inst.x, inst.y + 13, inst.x + 7, inst.y + 9);
-  dev->drawHLine(inst.x + 7, inst.y + 9, 3);
+  dev->drawLine(inst.x, inst.y + 14, inst.x + 7, inst.y + 10);
+  dev->drawBox(inst.x + 7, inst.y + 9, 3, 2); // Thicker horizontal tip
 
-  // 6. FIXED LEVEL PIPS (The 3 and 9 o'clock markers)
+  // 6. FIXED LEVEL PIPS (Static Markers)
   dev->drawHLine(inst.x - inst.r, inst.y, 4);
   dev->drawHLine(inst.x + inst.r - 4, inst.y, 4);
 
-  // 7. CENTER REFERENCE DOT (The "Nose")
+  // 7. CENTER REFERENCE DOT
   dev->drawDisc(inst.x, inst.y, 2); 
 
-  // 8. TOP POINTER (The triangle at 12 o'clock)
+  // 8. TOP POINTER (Triangle at 12 o'clock)
   dev->drawTriangle(inst.x, inst.y - 14, inst.x - 3, inst.y - 10, inst.x + 3, inst.y - 10);
+}
+
+void drawDirectionalGyro(Instrument &inst) {
+  U8G2* dev = inst.screen;
+  float heading = inst.val1; // 0-359
+  int cx = 31; // Center of the left half (approx 62/2)
+  int cy = 20; // Matches the vertical center of your horizon hole
+  
+  // 1. DRAW THE WINDOW FRAME
+  dev->setDrawColor(1);
+  dev->drawFrame(cx - 20, cy - 7, 40, 14); // The rectangular cutout
+  
+  // 2. DRAW THE ROTATING SCALE
+  dev->setFont(u8g2_font_04b_03_tr);
+  
+  // We draw ticks for every 5 degrees, and numbers for every 30
+  // To make it "scroll," we offset based on the heading
+  for (int a = -40; a <= 40; a += 5) {
+    // Calculate the actual compass degree for this tick
+    int degree = (int)(heading + a + 360) % 360;
+    
+    // Convert the 'a' offset to pixel X position
+    // Scale: 1 degree = 1.2 pixels (spreads 30 degrees over 36 pixels)
+    int xPos = cx + (a * 1.2);
+    
+    if (xPos > cx - 18 && xPos < cx + 18) {
+      if (degree % 10 == 0) {
+        // Major Tick
+        dev->drawVLine(xPos, cy - 4, 3);
+        
+        // Numbers every 30 degrees (3, 6, 9... 33, 0)
+        if (degree % 30 == 0) {
+          char buf[3];
+          int val = degree / 10;
+          itoa(val, buf, 10);
+          dev->drawStr(xPos - 3, cy + 6, buf);
+        }
+      } else {
+        // Minor Tick
+        dev->drawVLine(xPos, cy - 2, 2);
+      }
+    }
+  }
+
+  // 3. THE LUBBER LINE (The fixed reference pointer)
+  dev->setDrawColor(1);
+  dev->drawVLine(cx, cy - 9, 3); // Top pointer
+  dev->drawVLine(cx, cy + 6, 3); // Bottom pointer
+  
+  // 4. TEXT LABELS (Historical "Directional Gyro" markings)
+  dev->setFont(u8g2_font_04b_03_tr);
+  dev->drawStr(cx - 20, cy + 18, "DIR. GYRO");
+  dev->drawStr(cx - 20, cy + 26, "AN 5735-1A");
 }
 
 void drawAltimeter(Instrument &inst) {
@@ -280,23 +336,24 @@ void setup() {
 
 bool dataChanged = false; // The "Dirty Flag"
 
-void readMasterData() {
+void readMasterDataAndUpdateTelem() {
   while (fromMaster.available() > 0) {
     String tag = fromMaster.readStringUntil(':'); 
     tag.trim(); 
     if (tag.length() == 0) continue;
 
     float value = fromMaster.parseFloat();
-    dataChanged = true; // Flag that we have fresh intel
+    dataChanged = true; 
     
-    if (tag == "ROL") roll = value;
-    else if (tag == "PIT") pitch = value;
-    else if (tag == "HED") heading = value;
-    else if (tag == "ALT") altitude = value;
-    else if (tag == "SPD") airSpeed = value;
+    // Direct assignment to the cockpit struct for neatness
+    if (tag == "ROL")      cockpit.horizon.val1 = value;
+    else if (tag == "PIT") cockpit.horizon.val2 = value;
+    else if (tag == "HED") cockpit.gyro.val1 = value;
+    else if (tag == "ALT") cockpit.altimeter.val1 = value;
+    else if (tag == "BAR") cockpit.altimeter.val2 = value;
+    else if (tag == "SPD") cockpit.airspeed.val1 = value;
     else if (tag == "BAT") vBat = value;
     else if (tag == "GFO") currentG = value;
-    else if (tag == "BAR") baro = value;
     else if (tag == "WAR") warActive = (value > 0.5);
     
     // Garbage Disposal
@@ -307,31 +364,25 @@ void readMasterData() {
   }
 }
 
+void updateScreens() {
+  // --- SCREEN 1: LANDSCAPE (Directional Gyro & Horizon) ---
+  u8g2e1.clearBuffer();
+  drawDirectionalGyro(cockpit.gyro); // Positioned at X=34
+  drawHorizon(cockpit.horizon);      // Positioned at X=94
+  u8g2e1.sendBuffer();
+
+  // --- SCREEN 2: PORTRAIT (Altimeter & Airspeed) ---
+  u8g2e2.clearBuffer();
+  drawAltimeter(cockpit.altimeter);  // Positioned at Y=22
+  drawAirspeed(cockpit.airspeed);    // Positioned at Y=99
+  u8g2e2.sendBuffer();
+}
+
 void loop() {
-  readMasterData(); 
+  readMasterDataAndUpdateTelem(); 
 
   if (dataChanged) {
-    // 1. HORIZON (Landscape)
-    u8g2e1.clearBuffer();
-    cockpit.horizon.val1 = roll;
-    cockpit.horizon.val2 = pitch;
-    drawHorizon(cockpit.horizon);
-    u8g2e1.sendBuffer();
-
-    // 2. STACKED PORTRAIT (ASI + ALT)
-    u8g2e2.clearBuffer();
-    
-    // Pass fresh data to the struct
-    cockpit.airspeed.val1 = airSpeed; 
-    cockpit.altimeter.val1 = altitude;
-    cockpit.altimeter.val2 = baro;
-
-    // Draw using the struct's X and Y (32, 22 and 32, 106)
-    drawAirspeed(cockpit.airspeed);
-    drawAltimeter(cockpit.altimeter);
-    
-    u8g2e2.sendBuffer();
-
+    updateScreens();
     dataChanged = false; 
   }
 }
