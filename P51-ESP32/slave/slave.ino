@@ -16,7 +16,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2e1(U8G2_R0, U8X8_PIN_NONE, EXT_OLED_SCL,
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2e2(U8G2_R1, U8X8_PIN_NONE, EXT_OLED_SCL, EXT_OLED_SDA);
 U8G2_SSD1306_72X40_ER_F_SW_I2C u8g2bi(U8G2_R0, U8X8_PIN_NONE, BUILT_IN_OLED_SCL, BUILT_IN_OLED_SDA);
 
-enum GaugeType { P51_HORIZON, P51_ALTIMETER };
+enum GaugeType { P51_HORIZON, P51_ALTIMETER, P51_AIRSPEED };
 
 struct Instrument {
   const char* label;
@@ -30,15 +30,17 @@ struct Instrument {
 struct CockpitLayout {
   Instrument horizon;
   Instrument altimeter;
+  Instrument airspeed;
 };
 
-// Initialize with specific screen pointers
+// Label, Type, Val1, Val2, X, Y, Radius, Screen
 CockpitLayout cockpit = {
   {"HORIZON",   P51_HORIZON,   0.0, 0.0, 64, 32, 30, &u8g2e1},
-  {"ALTIMETER", P51_ALTIMETER, 0.0, 0.0, 64, 32, 30, &u8g2e2}
+  {"ALTIMETER", P51_ALTIMETER, 0.0, 0.0, 32, 22, 26, &u8g2e2}, // TOP
+  {"AIRSPEED",  P51_AIRSPEED,  0.0, 0.0, 32, 99, 26, &u8g2e2}  // BOTTOM (LIFTED)
 };
 
-float roll = 0.0, pitch = 0.0, heading = 0.0, altitude = 0.0, vBat = 0.0, currentG = 0.0, baro = 29.9;
+float roll = 0.0, pitch = 0.0, heading = 0.0, altitude = 0.0, vBat = 0.0, currentG = 0.0, baro = 29.9, airSpeed = 0;
 bool warActive = false;
 
 // --- DRAWING FUNCTIONS ---
@@ -91,13 +93,12 @@ void drawAltimeter(Instrument &inst) {
   float alt = inst.val1;
   int cx = inst.x; int cy = inst.y; int r = inst.r;
   
-  // RADIUS DEFINITIONS
-  int tickInnerR = r - 5;    // Where the shaded tick area ends
-  int numberR = r - 10;      // Where the numbers are centered
-  int innerDelineator = r - 15; // The final circle inside the numbers
+  // SCALED RADIUS DEFINITIONS
+  int tickInnerR = r - 4;       // Tightened for smaller dial
+  int numberR = r - 9;          // Where the numbers are centered
+  int innerDelineator = r - 14; // The final circle inside the numbers
 
   // 1. THE TICK-ZONE SHADING (10% Dither)
-  // Only fills the very outer 5 pixels where the tick marks are
   for (int y = -r; y <= r; y++) {
     for (int x = -r; x <= r; x++) {
       int distSq = x*x + y*y;
@@ -109,7 +110,7 @@ void drawAltimeter(Instrument &inst) {
     }
   }
 
-  // 2. THE NEW INNER BORDERS
+  // 2. THE INNER BORDERS
   dev->drawCircle(cx, cy, tickInnerR);      // Line separating ticks from numbers
   dev->drawCircle(cx, cy, innerDelineator); // Line separating numbers from the center
 
@@ -125,63 +126,134 @@ void drawAltimeter(Instrument &inst) {
     // Numbers (now in a clean black "Number Ring")
     char label[2]; 
     itoa(i, label, 10);
-    
     int tx = cx + numberR*cos(angle) - 2; 
     int ty = cy + numberR*sin(angle) + 3;
     dev->drawStr(tx, ty, label);
   }
 
-  // --- 3.5 KOLLSMAN WINDOW (Pressure Setting) ---
+ // --- 3.5 KOLLSMAN WINDOW (Pressure Setting) ---
   // Positioned at 3 o'clock, inside the inner delineator
-  int kx = cx + 8; // Shifted right
-  int ky = cy - 4; // Centered vertically on the 3 o'clock line
-  
-  dev->setDrawColor(0);          // First, clear a black box so the hands don't bleed through
-  dev->drawBox(kx, ky, 16, 9);   
-  dev->setDrawColor(1);          // Back to white
-  dev->drawFrame(kx, ky, 16, 9); // The window frame
-  
+  int kx = cx + 6;  // Shifted right
+  int ky = cy - 4;  // Centered vertically on the 3 o'clock line
+  dev->setDrawColor(0);
+  dev->drawBox(kx, ky, 14, 8);   
+  dev->setDrawColor(1);
+  dev->drawFrame(kx, ky, 14, 8); 
   dev->setFont(u8g2_font_04b_03_tr);
 
-  // Inside drawAltimeter on the Slave
   char baroBuf[6];
   // Convert val2 (the baro float) to a string: 4 wide, 1 decimal place
   dtostrf(inst.val2, 4, 1, baroBuf);
+  dev->drawStr(kx + 1, ky + 6, baroBuf);  // The baro setting
 
-  dev->drawStr(kx + 2, ky + 7, baroBuf); // The baro setting
-  
-  // --- 4. THE HANDS (Keep your current 5px/3px code) ---
+  // 4. THE HANDS (P51 Complex Style)
   
   // A. 10,000ft Hand
   float a10k = (fmod(alt, 100000.0) * 0.0036) - 90.0;
   float rad10k = a10k * (PI / 180.0);
-  int x10k = cx + (innerDelineator-3)*cos(rad10k);
-  int y10k = cy + (innerDelineator-3)*sin(rad10k);
-  for(float off = -0.05; off <= 0.05; off += 0.05) {
-    dev->drawLine(cx, cy, cx + (innerDelineator-3)*cos(rad10k + off), cy + (innerDelineator-3)*sin(rad10k + off));
-  }
+  int x10k = cx + (innerDelineator-2)*cos(rad10k);
+  int y10k = cy + (innerDelineator-2)*sin(rad10k);
+  dev->drawLine(cx, cy, x10k, y10k); // simplified the "thick" line for smaller pixels
   dev->drawDisc(x10k, y10k, 2);
 
   // B. 1,000ft Hand (Tapered Wedge)
   float a1k = (fmod(alt, 10000.0) * 0.036) - 90.0;
   float rad1k = a1k * (PI / 180.0);
-  int hx = cx + (innerDelineator+2)*cos(rad1k);
-  int hy = cy + (innerDelineator+2)*sin(rad1k);
+  int hx = cx + (innerDelineator+1)*cos(rad1k);
+  int hy = cy + (innerDelineator+1)*sin(rad1k);
   dev->drawTriangle(hx, hy, 
-                    cx + (innerDelineator-4)*cos(rad1k + 0.3), cy + (innerDelineator-4)*sin(rad1k + 0.3), 
-                    cx + (innerDelineator-4)*cos(rad1k - 0.3), cy + (innerDelineator-4)*sin(rad1k - 0.3));
+                    cx + (innerDelineator-3)*cos(rad1k + 0.25), cy + (innerDelineator-3)*sin(rad1k + 0.25), 
+                    cx + (innerDelineator-3)*cos(rad1k - 0.25), cy + (innerDelineator-3)*sin(rad1k - 0.25));
   dev->drawLine(cx, cy, hx, hy);
 
   // C. 100ft Hand (Long Sweep)
   float a100 = (fmod(alt, 1000.0) * 0.36) - 90.0;
   float rad100 = a100 * (PI / 180.0);
-  for(float off = -0.08; off <= 0.08; off += 0.04) {
-    dev->drawLine(cx, cy, cx + (r-4)*cos(rad100 + off), cy + (r-4)*sin(rad100 + off));
-  }
+  dev->drawLine(cx, cy, cx + (r-3)*cos(rad100), cy + (r-3)*sin(rad100));
 
   // 5. CENTER HUB
-  dev->setDrawColor(0); dev->drawDisc(cx, cy, 3);
-  dev->setDrawColor(1); dev->drawCircle(cx, cy, 3);
+  dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
+  dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
+}
+
+void drawAirspeed(Instrument &inst) {
+  U8G2* dev = inst.screen;
+  float speed = inst.val1; 
+  float targetVal = inst.val2;
+  int cx = inst.x; int cy = inst.y; int r = inst.r;
+  
+  int tickInnerR = r - 4;
+  int numberR = r - 9;
+  int innerDelineator = r - 14;
+
+  // 1. FRAME & SHADING
+  dev->drawCircle(cx, cy, r);
+  dev->drawCircle(cx, cy, tickInnerR);
+  dev->drawCircle(cx, cy, innerDelineator);
+
+  // Center Dither (5%)
+  for (int i = -innerDelineator; i <= innerDelineator; i++) {
+    for (int j = -innerDelineator; j <= innerDelineator; j++) {
+      if (i*i + j*j < (innerDelineator * innerDelineator)) {
+        if ((i + j) % 4 == 0) dev->drawPixel(cx + i, cy + j);
+      }
+    }
+  }
+
+  // 2. SCALE MAPPING FUNCTION
+  auto getSpeedAngle = [](float s) -> float {
+    float angle;
+    if (s <= 300) {
+      angle = 135 + (s / 300.0) * 180.0; // 0-300 covers 180 degrees
+    } else {
+      angle = 315 + ((s - 300.0) / 400.0) * 90.0; // 300-700 covers 90 degrees
+    }
+    return angle * (PI / 180.0);
+  };
+
+  // 3. DRAW ALL TICKS (Small and Large)
+  // Low speed: 10 unit increments
+  for (int s = 0; s <= 300; s += 10) {
+    float a = getSpeedAngle((float)s);
+    int tLen = (s % 50 == 0) ? 0 : 2; // Shorter ticks for non-major units
+    dev->drawLine(cx + (tickInnerR + tLen)*cos(a), cy + (tickInnerR + tLen)*sin(a), 
+                  cx + r*cos(a), cy + r*sin(a));
+  }
+  // High speed: 50 unit increments
+  for (int s = 350; s <= 700; s += 50) {
+    float a = getSpeedAngle((float)s);
+    dev->drawLine(cx + tickInnerR*cos(a), cy + tickInnerR*sin(a), 
+                  cx + r*cos(a), cy + r*sin(a));
+  }
+
+  // 4. DRAW LABELS (50, 100, 150, 200, 250, 300, 400, 500, 600, 700)
+  dev->setFont(u8g2_font_04b_03_tr);
+  int labels [10] = {50, 100, 150, 200, 250, 300, 400, 500, 600, 700};
+  for (int i = 0; i < 10; i++) {
+    float a = getSpeedAngle((float)labels [i]);
+    char buf [4];
+    itoa(labels [i], buf, 10);
+    // Offset labels slightly so they don't hit the ticks
+    dev->drawStr(cx + numberR*cos(a) - 4, cy + numberR*sin(a) + 3, buf);
+  }
+
+  // 5. THE HANDS
+  // Secondary Hand (Target)
+  float sAng = getSpeedAngle(targetVal);
+  dev->drawLine(cx, cy, cx + (r - 2)*cos(sAng), cy + (r - 2)*sin(sAng));
+
+  // Main Hand (Slender Triangle)
+  float mAng = getSpeedAngle(speed);
+  int hx = cx + (r - 2)*cos(mAng);
+  int hy = cy + (r - 2)*sin(mAng);
+  dev->drawTriangle(hx, hy, 
+                    cx + (innerDelineator-2)*cos(mAng + 0.12), cy + (innerDelineator-2)*sin(mAng + 0.12), 
+                    cx + (innerDelineator-2)*cos(mAng - 0.12), cy + (innerDelineator-2)*sin(mAng - 0.12));
+  dev->drawLine(cx, cy, hx, hy);
+
+  // 6. HUB
+  dev->setDrawColor(0); dev->drawDisc(cx, cy, 2);
+  dev->setDrawColor(1); dev->drawCircle(cx, cy, 2);
 }
 
 void setup() {
@@ -218,6 +290,7 @@ void readMasterData() {
     else if (tag == "PIT") pitch = value;
     else if (tag == "HED") heading = value;
     else if (tag == "ALT") altitude = value;
+    else if (tag == "SPD") airSpeed = value;
     else if (tag == "BAT") vBat = value;
     else if (tag == "GFO") currentG = value;
     else if (tag == "BAR") baro = value;
@@ -234,22 +307,28 @@ void readMasterData() {
 void loop() {
   readMasterData(); 
 
-  // ONLY draw if the Master actually sent something new
   if (dataChanged) {
-    // 1. Update Horizon
+    // 1. HORIZON (Landscape)
     u8g2e1.clearBuffer();
     cockpit.horizon.val1 = roll;
     cockpit.horizon.val2 = pitch;
     drawHorizon(cockpit.horizon);
     u8g2e1.sendBuffer();
 
-    // 2. Update Altimeter
+    // 2. STACKED PORTRAIT (ASI + ALT)
     u8g2e2.clearBuffer();
+    
+    // Pass fresh data to the struct
+    cockpit.airspeed.val1 = airSpeed; 
     cockpit.altimeter.val1 = altitude;
     cockpit.altimeter.val2 = baro;
+
+    // Draw using the struct's X and Y (32, 22 and 32, 106)
+    drawAirspeed(cockpit.airspeed);
     drawAltimeter(cockpit.altimeter);
+    
     u8g2e2.sendBuffer();
 
-    dataChanged = false; // Reset the flag until the next packet arrives
+    dataChanged = false; 
   }
 }

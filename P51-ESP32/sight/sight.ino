@@ -349,7 +349,7 @@ void loop() {
     toSlave.print(altitude);
     toSlave.print(",");
 
-    toSlave.print("ASP:"); 
+    toSlave.print("SPD:"); 
     toSlave.print(airSpeed);
     toSlave.print(",");
     
