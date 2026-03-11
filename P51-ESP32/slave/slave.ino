@@ -51,116 +51,82 @@ bool warActive = false;
 
 void drawHorizon(Instrument &inst) {
   U8G2* dev = inst.screen;
-  
-  // 1. MATH NUDGE (Essential for stability at 180 deg)
-  float rollDeg = inst.val1;
-  if (fmod(abs(rollDeg), 90.0) < 0.1) rollDeg += 0.05; 
-  float rollRad = rollDeg * (PI / 180.0);
-
-  // 2. PITCH MAPPING
+  float rollRad = (inst.val1 + (fmod(abs(inst.val1), 90.0) < 0.1 ? 0.05 : 0)) * (PI / 180.0);
   int pitchOff = map(constrain(inst.val2, -30, 30), -30, 30, -20, 20);
 
-  // 3. BANK SCALE (Internal Ticks)
+  // 1. BANK SCALE (Pulled Inbound)
   for (int a = -60; a <= 60; a += 10) {
-    float rad = (a - 90) * (PI / 180.0);
-    int rOut = inst.r - 1;
+    float rad = (a - 90) * (PI / 180.0);   
+    int rOut = inst.r - 1; 
     int rIn = (a % 30 == 0) ? inst.r - 7 : inst.r - 4;
     dev->drawLine(inst.x + rIn * cos(rad), inst.y + rIn * sin(rad),
                   inst.x + rOut * cos(rad), inst.y + rOut * sin(rad));
   }
 
-  // 4. MOVING HORIZON BAR (2-Pixel Thickness)
-  float cosR = cos(rollRad);
-  float sinR = sin(rollRad);
-  float xL = 45.0 * cosR;
-  float yL = 45.0 * sinR;
+  // 2. HORIZON BAR
+  float cosR = cos(rollRad); float sinR = sin(rollRad);
+  float xL = 50.0 * cosR; float yL = 50.0 * sinR;
 
-  // Draw two lines slightly offset for thickness
   for (int i = 0; i <= 1; i++) {
-    int x1 = inst.x - xL;
-    int y1 = inst.y - yL + pitchOff + i;
-    int x2 = inst.x + xL;
-    int y2 = inst.y + yL + pitchOff + i;
-    dev->drawLine(constrain(x1, 0, 127), constrain(y1, 0, 63),
-                  constrain(x2, 0, 127), constrain(y2, 0, 63));
+    dev->drawLine(
+      constrain(inst.x - xL, 0, 127), constrain(inst.y - yL + pitchOff + i, 0, 63),
+      constrain(inst.x + xL, 0, 127), constrain(inst.y + yL + pitchOff + i, 0, 63)
+    );
   }
 
-  // 5. THE TRIDENT PEDESTAL (Double-Thick)
-  // Vertical Stem (2 pixels wide)
-  dev->drawBox(inst.x - 1, inst.y + 11, 2, 18); 
-  
-  // Left Arm (Double-strike)
-  dev->drawLine(inst.x, inst.y + 13, inst.x - 7, inst.y + 9);
-  dev->drawLine(inst.x, inst.y + 14, inst.x - 7, inst.y + 10);
-  dev->drawBox(inst.x - 10, inst.y + 9, 3, 2); // Thicker horizontal tip
-  
-  // Right Arm (Double-strike)
-  dev->drawLine(inst.x, inst.y + 13, inst.x + 7, inst.y + 9);
-  dev->drawLine(inst.x, inst.y + 14, inst.x + 7, inst.y + 10);
-  dev->drawBox(inst.x + 7, inst.y + 9, 3, 2); // Thicker horizontal tip
+  // 3. TRIDENT (Nudged to match inst.y)
+  dev->drawBox(inst.x - 1, inst.y + 9, 2, 18);
+  dev->drawLine(inst.x, inst.y + 12, inst.x - 8, inst.y + 8);
+  dev->drawLine(inst.x, inst.y + 12, inst.x + 8, inst.y + 8);
+  dev->drawBox(inst.x - 10, inst.y + 8, 3, 2);
+  dev->drawBox(inst.x + 7, inst.y + 8, 3, 2);
 
-  // 6. FIXED LEVEL PIPS (Static Markers)
-  dev->drawHLine(inst.x - inst.r, inst.y, 4);
-  dev->drawHLine(inst.x + inst.r - 4, inst.y, 4);
-
-  // 7. CENTER REFERENCE DOT
+  // 4. CENTER DOT & TOP POINTER
   dev->drawDisc(inst.x, inst.y, 2); 
+  // 6. FIXED LEVEL PIPS (Static Markers)
+  dev->drawHLine(inst.x - inst.r + 6, inst.y, 4);
+  dev->drawHLine(inst.x + inst.r - 6 - 4, inst.y, 4);
 
-  // 8. TOP POINTER (Triangle at 12 o'clock)
-  dev->drawTriangle(inst.x, inst.y - 14, inst.x - 3, inst.y - 10, inst.x + 3, inst.y - 10);
+  // Triangle now references inst.r directly to stay proportional
+  dev->drawTriangle(inst.x, inst.y - inst.r + 2, inst.x - 3, inst.y - inst.r + 7, inst.x + 3, inst.y - inst.r + 7);
 }
 
 void drawDirectionalGyro(Instrument &inst) {
   U8G2* dev = inst.screen;
-  float heading = inst.val1; // 0-359
-  int cx = 31; // Center of the left half (approx 62/2)
-  int cy = 20; // Matches the vertical center of your horizon hole
+  float heading = inst.val1; 
+  int cx = inst.x; int cy = inst.y;
   
-  // 1. DRAW THE WINDOW FRAME
-  dev->setDrawColor(1);
-  dev->drawFrame(cx - 20, cy - 7, 40, 14); // The rectangular cutout
-  
-  // 2. DRAW THE ROTATING SCALE
+
   dev->setFont(u8g2_font_04b_03_tr);
-  
-  // We draw ticks for every 5 degrees, and numbers for every 30
-  // To make it "scroll," we offset based on the heading
-  for (int a = -40; a <= 40; a += 5) {
-    // Calculate the actual compass degree for this tick
+
+  // FRAME: Shifted to cx (20)
+  dev->drawFrame(cx - 19, cy - 9, 39, 16); 
+
+  for (int a = -35; a <= 35; a += 5) {
     int degree = (int)(heading + a + 360) % 360;
-    
-    // Convert the 'a' offset to pixel X position
-    // Scale: 1 degree = 1.2 pixels (spreads 30 degrees over 36 pixels)
-    int xPos = cx + (a * 1.2);
-    
+    int xPos = cx + (a * 1.2); 
+
     if (xPos > cx - 18 && xPos < cx + 18) {
       if (degree % 10 == 0) {
-        // Major Tick
-        dev->drawVLine(xPos, cy - 4, 3);
-        
-        // Numbers every 30 degrees (3, 6, 9... 33, 0)
+        dev->drawVLine(xPos, cy - 6, 3);
         if (degree % 30 == 0) {
           char buf[3];
-          int val = degree / 10;
-          itoa(val, buf, 10);
-          dev->drawStr(xPos - 3, cy + 6, buf);
+          itoa(degree / 10, buf, 10);
+          dev->drawStr(xPos - (dev->getStrWidth(buf)/2), cy + 5, buf);
         }
       } else {
-        // Minor Tick
-        dev->drawVLine(xPos, cy - 2, 2);
+        dev->drawVLine(xPos, cy - 3, 2);
       }
     }
   }
 
-  // 3. THE LUBBER LINE (The fixed reference pointer)
-  dev->setDrawColor(1);
-  dev->drawVLine(cx, cy - 9, 3); // Top pointer
-  dev->drawVLine(cx, cy + 6, 3); // Bottom pointer
-  
-  // 4. TEXT LABELS (Historical "Directional Gyro" markings)
-  dev->setFont(u8g2_font_04b_03_tr);
-  dev->drawStr(cx - 20, cy + 18, "DIR. GYRO");
-  dev->drawStr(cx - 20, cy + 26, "AN 5735-1A");
+  // LUBBER LINE
+  dev->drawVLine(cx, cy - 12, 3); 
+  dev->drawVLine(cx, cy + 7, 3);
+
+  // TEXT (Positioned relative to new cy)
+  dev->drawStr(cx - 17, cy + 16, "DIR. GYRO");
+  dev->drawStr(cx - 16, cy + 24, "AN 5735-1A");
 }
 
 void drawAltimeter(Instrument &inst) {
