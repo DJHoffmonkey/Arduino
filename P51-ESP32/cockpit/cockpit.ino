@@ -14,7 +14,7 @@ float roll, pitch, alt, airSpeed, vsi, heading;
 
 void setup() {
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(3);
   tft.fillScreen(TFT_BLACK);
   canvas.createSprite(80, 80); // Canvas sized for the 11.1mm gauge
   canvas.setTextDatum(MC_DATUM);
@@ -36,48 +36,53 @@ void drawAirspeed(int x, int y, float s) {
 
 // --- #6 HORIZON (11.1mm -> r36) ---
 void drawHorizon(int x, int y, float rll, float ptch) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx = 40, cy = 40, cr = 36;
+  // 1. Setup Canvas
+  canvas.fillSprite(P51_SKY); // Background is sky by default
+  int cx = 40, cy = 40;
+  int cr = 36; // Radius for ticks
   
-  // 1. Draw the "Dished" Background Window
-  // This creates the shape seen in your photo where the horizon lives
-  canvas.fillSmoothRoundRect(cx-28, cy-22, 56, 44, 10, P51_EARTH); 
-
-  // 2. The Moving Horizon (Sky vs Earth)
-  // We calculate the horizon line based on pitch and roll
+  // 2. Draw the "Moving World" (Sky/Earth Split)
   float radRoll = rll * (PI / 180.0);
   float tanRoll = tan(radRoll);
-  float pOffset = constrain(ptch, -20, 20); // 1/7th scale sensitivity
+  float pOffset = constrain(ptch * 1.5, -35, 35); // RC sensitivity boost
 
-  for (int i = -28; i <= 28; i++) {
+  // Fill the Earth (Ground) based on pitch and roll
+  // We draw a large rectangle and rotate/offset it
+  for (int i = -40; i <= 40; i++) {
     float horizonY = cy - pOffset + (i * tanRoll);
-    // Draw the sky portion inside the window bounds
-    canvas.drawLine(cx + i, cy - 20, cx + i, constrain(horizonY, cy-20, cy+20), P51_SKY);
+    if (horizonY < 80) {
+      canvas.drawLine(cx + i, constrain(horizonY, 0, 80), cx + i, 80, P51_EARTH);
+    }
   }
 
-  // 3. Bank Scale Ticks (Top Arc)
-  canvas.setTextColor(TFT_WHITE);
+  // 3. Static Bank Ticks (White/Radium)
+  // These stay fixed while the world rotates behind them
   for (int a = -60; a <= 60; a += 30) {
     float tr = (a - 90) * (PI / 180.0);
-    canvas.drawLine(cx + (cr-5)*cos(tr), cy + (cr-5)*sin(tr), 
+    int len = (a == 0) ? 8 : 5; // Longer tick at the 12 o'clock
+    canvas.drawLine(cx + (cr-len)*cos(tr), cy + (cr-len)*sin(tr), 
                     cx + cr*cos(tr), cy + cr*sin(tr), P51_RADIUM);
   }
 
-  // 4. The "Fixed" Aircraft Reference (The Yellow "W")
-  // Center dot
-  canvas.fillCircle(cx, cy, 2, TFT_YELLOW);
-  // Left and Right wing bars
-  canvas.fillRoundRect(cx - 18, cy - 1, 12, 3, 1, TFT_YELLOW);
-  canvas.fillRoundRect(cx + 6, cy - 1, 12, 3, 1, TFT_YELLOW);
-  
-  // 5. Outer Bezel & Text
-  canvas.drawCircle(cx, cy, cr, P51_RADIUM); // Glass rim
-  canvas.setTextColor(P51_RADIUM);
-  canvas.drawString("GYRO HORIZON", cx, cy + 28, 1);
+  // 4. Subtle Static Reference Ticks (Horizontal dashes outside the center)
+  canvas.drawLine(cx - 35, cy, cx - 25, cy, P51_RADIUM); // Left outer tick
+  canvas.drawLine(cx + 25, cy, cx + 35, cy, P51_RADIUM); // Right outer tick
 
+  // 5. The Aircraft Reference (Inverted Yellow Triangle + Center Dot)
+  // Triangle
+  canvas.fillTriangle(cx - 4, cy - 8, cx + 4, cy - 8, cx, cy - 2, TFT_YELLOW);
+  // The "W" Trident bars
+  canvas.fillRect(cx - 15, cy - 1, 8, 2, TFT_YELLOW);
+  canvas.fillRect(cx + 7, cy - 1, 8, 2, TFT_YELLOW);
+  canvas.fillCircle(cx, cy, 1, TFT_BLACK); // Tiny center "pin"
+
+  // 6. Subtle Serial Text (Bottom)
+  canvas.setTextColor(TFT_BLACK); // Small and dark, like an engraving
+  canvas.drawCentreString("AN 5736 - 1A", cx, 72, 1);
+
+  // 7. Push to screen (No outer circle - the stencil does the work!)
   canvas.pushSprite(x - 40, y - 40);
 }
-
 // --- #8 ALTIMETER (9mm -> r29) ---
 void drawAltimeter(int x, int y, float meters) {
   canvas.fillSprite(P51_CHARCOAL);
