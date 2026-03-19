@@ -14,7 +14,7 @@ float roll, pitch, alt, airSpeed, vsi, heading;
 
 void setup() {
   tft.init();
-  tft.setRotation(3);
+  tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
   canvas.createSprite(80, 80); // Canvas sized for the 11.1mm gauge
   canvas.setTextDatum(MC_DATUM);
@@ -128,19 +128,24 @@ void drawVSI(int x, int y, float v) {
 }
 
 void loop() {
-  float t = millis()/1000.0;
-  airSpeed = 40 + sin(t*0.5)*30; 
-  alt = 50 + sin(t*0.2)*45;      
-  roll = sin(t)*35;              
+  // 1. Get your flight data (Bench mode for now)
+  float t = millis() / 1000.0;
+  airSpeed = 45 + sin(t*0.5)*35;
+  alt = 60 + sin(t*0.2)*55;
+  roll = sin(t)*35;
   pitch = cos(t*0.7)*10;
-  vsi = cos(t*0.2)*7;            
+  vsi = cos(t*0.2)*8;
 
-  // RENDER TO YOUR STENCIL CENTERS (Adjust these to match your film traces)
-  drawAirspeed(55, 60, airSpeed);    // #11
-  drawTurn(160, 60, roll);           // #7
-  drawHorizon(265, 60, roll, pitch); // #6 (The Big One)
+  // 2. Render to the 2.2" Screen Holes
+  // Coordinates (X, Y) are the center of the hole
   
-  drawAltimeter(55, 170, alt);       // #8
-  drawBank(160, 170, roll);          // #12
-  drawVSI(265, 170, vsi);            // #13
+  // TOP ROW
+  drawAirspeed(60, 65, airSpeed);    // Top Left (#11)
+  drawTurn(160, 65, roll);           // Top Middle (#7)
+  drawHorizon(260, 65, roll, pitch); // Top Right (#6 - The Big One)
+
+  // BOTTOM ROW
+  drawAltimeter(60, 175, alt);       // Bottom Left (#8)
+  drawBank(160, 175, roll);          // Bottom Middle (#12)
+  drawVSI(260, 175, vsi);            // Bottom Right (#13)
 }
