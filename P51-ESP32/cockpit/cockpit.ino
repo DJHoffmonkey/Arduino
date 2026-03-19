@@ -36,18 +36,14 @@ void drawAirspeed(int x, int y, float s) {
 
 // --- #6 HORIZON (11.1mm -> r36) ---
 void drawHorizon(int x, int y, float rll, float ptch) {
-  // 1. Setup Canvas
-  canvas.fillSprite(P51_SKY); // Background is sky by default
-  int cx = 40, cy = 40;
-  int cr = 36; // Radius for ticks
+  canvas.fillSprite(P51_SKY);
+  int cx = 40, cy = 40, cr = 36;
   
-  // 2. Draw the "Moving World" (Sky/Earth Split)
+  // 1. Moving World (Sky/Earth)
   float radRoll = rll * (PI / 180.0);
   float tanRoll = tan(radRoll);
-  float pOffset = constrain(ptch * 1.5, -35, 35); // RC sensitivity boost
+  float pOffset = constrain(ptch * 1.2, -30, 30);
 
-  // Fill the Earth (Ground) based on pitch and roll
-  // We draw a large rectangle and rotate/offset it
   for (int i = -40; i <= 40; i++) {
     float horizonY = cy - pOffset + (i * tanRoll);
     if (horizonY < 80) {
@@ -55,34 +51,37 @@ void drawHorizon(int x, int y, float rll, float ptch) {
     }
   }
 
-  // 3. Static Bank Ticks (White/Radium)
-  // These stay fixed while the world rotates behind them
+  // 2. Static Bank Ticks (Top Arc)
   for (int a = -60; a <= 60; a += 30) {
     float tr = (a - 90) * (PI / 180.0);
-    int len = (a == 0) ? 8 : 5; // Longer tick at the 12 o'clock
-    canvas.drawLine(cx + (cr-len)*cos(tr), cy + (cr-len)*sin(tr), 
+    canvas.drawLine(cx + (cr-4)*cos(tr), cy + (cr-4)*sin(tr), 
                     cx + cr*cos(tr), cy + cr*sin(tr), P51_RADIUM);
   }
 
-  // 4. Subtle Static Reference Ticks (Horizontal dashes outside the center)
-  canvas.drawLine(cx - 35, cy, cx - 25, cy, P51_RADIUM); // Left outer tick
-  canvas.drawLine(cx + 25, cy, cx + 35, cy, P51_RADIUM); // Right outer tick
+  // 3. The "Bomb" Bank Pointer (Rotates with Roll)
+  float bombAng = (rll - 90) * (PI / 180.0);
+  int bx = cx + (cr-8) * cos(bombAng);
+  int by = cy + (cr-8) * sin(bombAng);
+  canvas.fillTriangle(bx-3, by-3, bx+3, by-3, bx, by+4, TFT_WHITE); 
+  canvas.drawLine(bx, by-8, bx, by-3, TFT_WHITE);
 
-  // 5. The Aircraft Reference (Inverted Yellow Triangle + Center Dot)
-  // Triangle
-  canvas.fillTriangle(cx - 4, cy - 8, cx + 4, cy - 8, cx, cy - 2, TFT_YELLOW);
-  // The "W" Trident bars
-  canvas.fillRect(cx - 15, cy - 1, 8, 2, TFT_YELLOW);
-  canvas.fillRect(cx + 7, cy - 1, 8, 2, TFT_YELLOW);
-  canvas.fillCircle(cx, cy, 1, TFT_BLACK); // Tiny center "pin"
+  // 4. THE TRIDENT (Aligned Exactly)
+  // Horizontal Reference Line: cy
+  // Wing bars: 2px thick, starting at cy
+  canvas.fillRect(cx - 18, cy, 10, 2, TFT_YELLOW); // Left Wing
+  canvas.fillRect(cx + 8, cy, 10, 2, TFT_YELLOW);  // Right Wing
+  
+  // Inverted Triangle: Point ends exactly at cy to match the wings
+  // (Base at cy-6, Point at cy)
+  canvas.fillTriangle(cx - 4, cy - 6, cx + 4, cy - 6, cx, cy, TFT_YELLOW); 
 
-  // 6. Subtle Serial Text (Bottom)
-  canvas.setTextColor(TFT_BLACK); // Small and dark, like an engraving
-  canvas.drawCentreString("AN 5736 - 1A", cx, 72, 1);
+  // 5. Minimalist Serial Text
+  canvas.setTextColor(0x2104); 
+  canvas.drawCentreString("AN 5736-1A", cx, 72, 1);
 
-  // 7. Push to screen (No outer circle - the stencil does the work!)
   canvas.pushSprite(x - 40, y - 40);
 }
+
 // --- #8 ALTIMETER (9mm -> r29) ---
 void drawAltimeter(int x, int y, float meters) {
   canvas.fillSprite(P51_CHARCOAL);
@@ -107,14 +106,33 @@ void drawTurn(int x, int y, float rll) {
   canvas.pushSprite(x-40, y-40);
 }
 
-// --- #12 SLIP BALL (9mm -> r29) ---
 void drawBank(int x, int y, float rll) {
   canvas.fillSprite(P51_CHARCOAL);
-  int cx=40, cy=40;
-  canvas.drawSmoothArc(cx, cy, 28, 25, 160, 200, P51_RADIUM, P51_CHARCOAL);
-  float ballX = cx + constrain(rll, -25, 25) * 0.6; 
-  canvas.fillCircle(ballX, cy + 26, 3, TFT_WHITE);
-  canvas.pushSprite(x-40, y-40);
+  int cx = 40, cy = 40;
+  
+  // 1. The Background Housing (slightly aged/browned)
+  canvas.fillSmoothCircle(cx, cy, 32, 0x4228); 
+
+  // 2. The "Bomb" Top Reference (Nudged 1px Left)
+  // Wider at the top, tapering down to the tube
+  canvas.fillSmoothRoundRect(cx - 3, cy - 28, 6, 12, 2, P51_DIRTY_W); // Top body
+  // Triangle moved from (cx-3, cx+3, cx) to (cx-4, cx+2, cx-1)
+  canvas.fillTriangle(cx - 4, cy - 16, cx + 2, cy - 16, cx - 1, cy - 10, P51_DIRTY_W);
+  // 3. The Yellow "Wings" (The Static Blocks)
+  // Note: These are slightly curved in the real plane
+  canvas.fillRoundRect(cx - 28, cy + 2, 12, 10, 2, 0xCE60); 
+  canvas.fillRoundRect(cx + 16, cy + 2, 12, 10, 2, 0xCE60);
+
+  // 4. The Slip Ball
+  float ballX = cx + constrain(rll * 0.5, -15, 15);
+  
+  // Ball Shadow & Body
+  canvas.fillCircle(ballX, cy + 7, 6, TFT_BLACK);
+  canvas.fillCircle(ballX, cy + 7, 5, 0x7BEF); 
+  // Specular highlight to make it look like a steel ball in liquid
+  canvas.fillCircle(ballX - 2, cy + 5, 2, TFT_WHITE);
+
+  canvas.pushSprite(x - 40, y - 40);
 }
 
 // --- #13 VSI (9mm -> r29) ---
