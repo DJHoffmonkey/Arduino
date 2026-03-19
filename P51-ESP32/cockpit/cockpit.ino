@@ -136,16 +136,17 @@ void loop() {
   pitch = cos(t*0.7)*10;
   vsi = cos(t*0.2)*8;
 
-  // 2. Render to the 2.2" Screen Holes
-  // Coordinates (X, Y) are the center of the hole
-  
+// --- 2.2" S3 STENCIL ALIGNMENT (NUDGED) ---
+
   // TOP ROW
-  drawAirspeed(60, 65, airSpeed);    // Top Left (#11)
-  drawTurn(160, 65, roll);           // Top Middle (#7)
-  drawHorizon(260, 65, roll, pitch); // Top Right (#6 - The Big One)
+  drawAirspeed(33, 48, airSpeed);    // #11
+  drawTurn(140, 48, roll);           // #7
+  // HORIZON (#6): Moved from (245, 75) to (241, 55) 
+  // This is 4px Left (5%) and 20px Up (25%)
+  drawHorizon(253, 54, roll, pitch); 
 
   // BOTTOM ROW
-  drawAltimeter(60, 175, alt);       // Bottom Left (#8)
-  drawBank(160, 175, roll);          // Bottom Middle (#12)
-  drawVSI(260, 175, vsi);            // Bottom Right (#13)
+  drawAltimeter(33, 144, alt);       // #8
+  drawBank(146, 170, roll);          // #12
+  drawVSI(253, 170, vsi);            // #13
 }
