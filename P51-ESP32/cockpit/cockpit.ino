@@ -74,20 +74,82 @@ void drawHorizon(int x, int y, float rll, float ptch) {
   canvas.pushSprite(x - 40, y - 40);
 }
 
-
-// --- #8 ALTIMETER (9mm -> r29) ---
-void drawAltimeter(int x, int y, float meters) {
+void drawAltimeter(int x, int y, float alt) {
   canvas.fillSprite(P51_CHARCOAL);
-  int cx=40, cy=40, r=29;
-  canvas.drawCircle(cx, cy, r, P51_RADIUM);
-  for(int i=0; i<10; i++){
-    float ang = (i*36-90)*PI/180.0;
-    canvas.drawNumber(i, cx+21*cos(ang), cy+21*sin(ang), 1);
+  int cx = 40, cy = 40;
+  
+  // 1. Background Layers
+  canvas.fillSmoothCircle(cx, cy, 33, P51_EARTH); // Aged ring
+  canvas.fillSmoothCircle(cx, cy, 22, 0x18C3);    // Sunken center
+
+  // 2. Dial Markings
+  canvas.setTextColor(P51_RADIUM);
+  for (int i = 0; i < 10; i++) {
+    float angle = (i * 36 - 90) * (PI / 180.0);
+    
+    // Numbers
+    int tx = cx + 25 * cos(angle);
+    int ty = cy + 25 * sin(angle);
+    canvas.drawCentreString(String(i), tx, ty - 4, 2);
+    
+    // Major Ticks (100ft)
+    canvas.drawLine(cx + 29 * cos(angle), cy + 29 * sin(angle), 
+                    cx + 33 * cos(angle), cy + 33 * sin(angle), P51_RADIUM);
+    
+    // Minor Ticks (20ft) - FIXED MATH HERE
+    for (int j = 1; j < 5; j++) {
+      float subAngle = (i * 36 + j * 7.2 - 90) * (PI / 180.0);
+      canvas.drawLine(cx + 31 * cos(subAngle), cy + 31 * sin(subAngle), 
+                      cx + 33 * cos(subAngle), cy + 33 * sin(subAngle), P51_RADIUM);
+    }
   }
-  float a100 = (fmod(meters, 100.0) * 3.6 - 90)*PI/180.0;
-  canvas.drawLine(cx, cy, cx+(r-4)*cos(a100), cy+(r-4)*sin(a100), P51_DIRTY_W);
-  canvas.pushSprite(x-40, y-40);
+
+  // 3. Kollsman Window (Tiny 3-digit)
+  int kx = cx + 16, ky = cy - 6;
+  canvas.fillRect(kx, ky, 14, 10, TFT_BLACK); 
+  canvas.drawRect(kx, ky, 14, 10, 0x4228); 
+  canvas.setTextColor(TFT_WHITE);
+  canvas.drawCentreString("299", kx + 7, ky + 1, 1); 
+
+  // 4. Labels
+  canvas.setTextColor(P51_RADIUM);
+  canvas.drawCentreString("ALT", cx, cy + 6, 1);
+  canvas.setTextColor(0x2104); 
+  canvas.drawCentreString("1000 FEET", cx, cy - 3, 1);
+
+  // 5. Hand Logic (Using fmod to keep rotations clean)
+  float deg100   = (fmod(alt, 1000.0) / 1000.0) * 360.0;
+  float deg1000  = (fmod(alt, 10000.0) / 10000.0) * 360.0;
+  float deg10000 = (fmod(alt, 100000.0) / 100000.0) * 360.0;
+
+  // 6. Draw Hands (Ordering is vital)
+  drawAltHand(cx, cy, deg10000, 31, 1, true);  // 10k Crow's Foot
+  drawAltHand(cx, cy, deg1000, 20, 4, false);  // 1k Fat Hand
+  drawAltHand(cx, cy, deg100, 34, 2, false);   // 100ft Long Hand
+
+  canvas.fillCircle(cx, cy, 3, TFT_BLACK); 
+  canvas.pushSprite(x - 40, y - 40);
 }
+
+// Ensure this helper function is exactly as written below:
+void drawAltHand(int cx, int cy, float deg, int len, int width, bool is10k) {
+  float rad = (deg - 90.0) * (PI / 180.0);
+  int px = cx + len * cos(rad);
+  int py = cy + len * sin(rad);
+  
+  if (is10k) {
+    canvas.drawLine(cx, cy, px, py, TFT_WHITE);
+    // Crow's foot triangle tip
+    float x1 = cx + (len - 5) * cos(rad + 0.2);
+    float y1 = cy + (len - 5) * sin(rad + 0.2);
+    float x2 = cx + (len - 5) * cos(rad - 0.2);
+    float y2 = cy + (len - 5) * sin(rad - 0.2);
+    canvas.fillTriangle(px, py, (int)x1, (int)y1, (int)x2, (int)y2, TFT_WHITE);
+  } else {
+    canvas.drawWideLine(cx, cy, px, py, width, TFT_WHITE, 0x18C3);
+  }
+}
+
 
 void drawTurn(int x, int y, float heading) {
   canvas.fillSprite(P51_CHARCOAL); 
