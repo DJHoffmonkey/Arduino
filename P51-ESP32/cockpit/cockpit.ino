@@ -50,11 +50,11 @@ void drawHorizon(int x, int y, float rll, float ptch) {
     }
   }
 
-  // 2. FIXED TDC MARKER (Just the triangle pointing down)
-  // Base at y=4, Tip at y=12
-  canvas.fillTriangle(cx - 5, 4, cx + 5, 4, cx, 12, TFT_YELLOW);
+  // 2. JUST THE TDC TRIANGLE (Fixed at top)
+  // x-coords: cx-4, cx+4, cx | y-coords: 5, 5, 13
+  canvas.fillTriangle(cx - 3, 3, cx + 3, 3, cx, 3+3+1, TFT_YELLOW);
 
-  // 3. Bank Ticks (Yellow)
+  // 3. Yellow Bank Ticks
   for (int a = -60; a <= 60; a += 30) {
     if (a == 0) continue; 
     float tr = (a - 90) * (PI / 180.0);
@@ -62,12 +62,10 @@ void drawHorizon(int x, int y, float rll, float ptch) {
                     cx + cr*cos(tr), cy + cr*sin(tr), TFT_YELLOW);
   }
 
-  // 4. THE TRIDENT (Floating Center Reference)
-  canvas.fillCircle(cx, cy, 3, TFT_YELLOW); // Bold Center Dot
-  
-  // Horizontal wings only
-  canvas.fillRect(cx - 20, cy - 1.5, 12, 3, TFT_YELLOW); // Left
-  canvas.fillRect(cx + 8, cy - 1.5, 12, 3, TFT_YELLOW);  // Right
+  // 4. THE TRIDENT (Floating Pin & Wings)
+  canvas.fillCircle(cx, cy - 1, 2, TFT_YELLOW); 
+  canvas.fillRect(cx - 10 - 18, cy - 1.5, 18, 3, TFT_YELLOW); // Left
+  canvas.fillRect(cx + 10, cy - 1.5, 18, 3, TFT_YELLOW);  // Right
 
   // 5. Text
   canvas.setTextColor(0x2104); 
@@ -75,7 +73,6 @@ void drawHorizon(int x, int y, float rll, float ptch) {
 
   canvas.pushSprite(x - 40, y - 40);
 }
-
 
 
 // --- #8 ALTIMETER (9mm -> r29) ---
@@ -92,14 +89,48 @@ void drawAltimeter(int x, int y, float meters) {
   canvas.pushSprite(x-40, y-40);
 }
 
-// --- #7 TURN INDICATOR (8.2mm -> r27) ---
-void drawTurn(int x, int y, float rll) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx=40, cy=40, r=27;
-  canvas.drawCircle(cx, cy, r, P51_RADIUM);
-  float nAng = map(constrain(rll, -45, 45), -45, 45, 220, 320) * PI/180.0;
-  canvas.drawLine(cx, cy, cx+(r-4)*cos(nAng), cy+(r-4)*sin(nAng), P51_DIRTY_W);
-  canvas.pushSprite(x-40, y-40);
+void drawTurn(int x, int y, float heading) {
+  canvas.fillSprite(P51_CHARCOAL); // Dark face of the gauge
+  int cx = 40, cy = 40;
+
+  // 1. The "Window" Cutout
+  // A rectangular slot near the top, just like the real one
+  canvas.fillRect(cx - 25, cy - 25, 50, 18, TFT_BLACK); 
+  canvas.drawRect(cx - 25, cy - 25, 50, 18, 0x4228); // Subtle bezel frame
+
+  // 2. The Rolling Drum Logic
+  // We draw the numbers and ticks. Since the window is small, 
+  // we only need to check a range of +/- 30 degrees around current heading.
+  canvas.setTextColor(P51_RADIUM);
+  canvas.setTextSize(1);
+
+  for (int i = -30; i <= 30; i += 5) {
+    int angle = (int)(heading + i + 360) % 360;
+    // Map the angle to a horizontal pixel position in our window
+    int scrollX = cx + (i * 2); // 2 pixels per degree of rotation
+
+    if (scrollX > cx - 22 && scrollX < cx + 22) {
+      // Draw major numbers every 30 degrees (3, 6, 9... 0 for 360)
+      if (angle % 30 == 0) {
+        String label = String(angle / 10);
+        if (angle == 0) label = "0";
+        canvas.drawCentreString(label, scrollX, cy - 22, 1);
+      } 
+      // Draw ticks every 5 degrees
+      canvas.vline(scrollX, cy - 12, 4, P51_RADIUM);
+    }
+  }
+
+  // 3. The Fixed Reference "Lubber Line"
+  // The white vertical line in the center of the window that you read against
+  canvas.fillRect(cx - 1, cy - 26, 2, 20, TFT_WHITE);
+
+  // 4. Gauge Labeling
+  canvas.setTextColor(0x2104); // Faint dark grey for engraved look
+  canvas.drawCentreString("DIRECTIONAL GYRO", cx, cy + 5, 1);
+  canvas.drawCentreString("AN 5735-1A", cx, cy + 15, 1);
+
+  canvas.pushSprite(x - 40, y - 40);
 }
 
 void drawBank(int x, int y, float rll) {
@@ -111,9 +142,7 @@ void drawBank(int x, int y, float rll) {
 
   // 2. The "Bomb" Top Reference (Nudged 1px Left)
   // Wider at the top, tapering down to the tube
-  canvas.fillSmoothRoundRect(cx - 3, cy - 28, 6, 12, 2, P51_DIRTY_W); // Top body
-  // Triangle moved from (cx-3, cx+3, cx) to (cx-4, cx+2, cx-1)
-  canvas.fillTriangle(cx - 4, cy - 16, cx + 2, cy - 16, cx - 1, cy - 10, P51_DIRTY_W);
+  canvas.fillSmoothRoundRect(cx - 3, cy - 28, 5, 12, 2, P51_DIRTY_W); // Top body
   // 3. The Yellow "Wings" (The Static Blocks)
   // Note: These are slightly curved in the real plane
   canvas.fillRoundRect(cx - 28, cy + 2, 12, 10, 2, 0xCE60); 
