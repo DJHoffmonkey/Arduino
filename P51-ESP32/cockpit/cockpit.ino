@@ -34,7 +34,6 @@ void drawAirspeed(int x, int y, float s) {
   canvas.pushSprite(x-40, y-40);
 }
 
-// --- #6 HORIZON (11.1mm -> r36) ---
 void drawHorizon(int x, int y, float rll, float ptch) {
   canvas.fillSprite(P51_SKY);
   int cx = 40, cy = 40, cr = 36;
@@ -51,31 +50,34 @@ void drawHorizon(int x, int y, float rll, float ptch) {
     }
   }
 
-  // 2. Static Bank Ticks (Top Arc)
+  // 2. The Fixed "Bomb" Marker (TDC)
+  // This is static at the top of the dial
+  canvas.fillSmoothRoundRect(cx - 2, cy - 36, 4, 8, 1, TFT_WHITE); // Stem
+  canvas.fillTriangle(cx - 3, cy - 30, cx + 3, cy - 30, cx, cy - 26, TFT_WHITE); // Tip
+
+  // 3. Static Bank Ticks (30, 60 deg)
   for (int a = -60; a <= 60; a += 30) {
+    if (a == 0) continue; // Skip 0 as the "Bomb" is there
     float tr = (a - 90) * (PI / 180.0);
     canvas.drawLine(cx + (cr-4)*cos(tr), cy + (cr-4)*sin(tr), 
                     cx + cr*cos(tr), cy + cr*sin(tr), P51_RADIUM);
   }
 
-  // 3. The "Bomb" Bank Pointer (Rotates with Roll)
-  float bombAng = (rll - 90) * (PI / 180.0);
-  int bx = cx + (cr-8) * cos(bombAng);
-  int by = cy + (cr-8) * sin(bombAng);
-  canvas.fillTriangle(bx-3, by-3, bx+3, by-3, bx, by+4, TFT_WHITE); 
-  canvas.drawLine(bx, by-8, bx, by-3, TFT_WHITE);
-
-  // 4. THE TRIDENT (Aligned Exactly)
-  // Horizontal Reference Line: cy
-  // Wing bars: 2px thick, starting at cy
-  canvas.fillRect(cx - 18, cy, 10, 2, TFT_YELLOW); // Left Wing
-  canvas.fillRect(cx + 8, cy, 10, 2, TFT_YELLOW);  // Right Wing
+  // 4. THE FORK / TRIDENT (Mechanical Look)
+  // Central Pin Head
+  canvas.fillCircle(cx, cy, 1.5, TFT_YELLOW); 
   
-  // Inverted Triangle: Point ends exactly at cy to match the wings
-  // (Base at cy-6, Point at cy)
-  canvas.fillTriangle(cx - 4, cy - 6, cx + 4, cy - 6, cx, cy, TFT_YELLOW); 
+  // The "U" Shape (The fork body) - drawn in dark grey
+  canvas.drawSmoothArc(cx, cy, 12, 10, 120, 240, 0x4228, P51_SKY);
+  canvas.fillRect(cx - 1, cy, 2, 10, 0x4228); // Bottom support
 
-  // 5. Minimalist Serial Text
+  // The Yellow Tips (The actual reference marks)
+  // Left Wing Tip
+  canvas.fillRect(cx - 18, cy - 1, 10, 2, TFT_YELLOW); 
+  // Right Wing Tip
+  canvas.fillRect(cx + 8, cy - 1, 10, 2, TFT_YELLOW); 
+
+  // 5. Dark Text
   canvas.setTextColor(0x2104); 
   canvas.drawCentreString("AN 5736-1A", cx, 72, 1);
 
