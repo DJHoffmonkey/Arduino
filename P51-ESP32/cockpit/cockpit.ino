@@ -116,9 +116,8 @@ void drawTurn(int x, int y, float heading) {
         if (angle == 0) label = "0";
         canvas.drawCentreString(label, scrollX, cy - 22, 1);
       } 
-      // Draw ticks every 5 degrees
-      canvas.vline(scrollX, cy - 12, 4, P51_RADIUM);
-    }
+    // Draw ticks every 5 degrees
+    canvas.drawFastVLine(scrollX, cy - 12, 4, P51_RADIUM);    }
   }
 
   // 3. The Fixed Reference "Lubber Line"
