@@ -12,12 +12,12 @@
 // Change 'Serial' to 'Serial0' here if the USB port is still silent
 #define console Serial0
 
-#define RX_FROM_FC 44 
-#define TX_TO_FC 43
+#define RX_FROM_FC 2  // Physical Pin 2
+#define TX_TO_FC 1    // Physical Pin 1
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
-HardwareSerial toAndFromFC(2); // Use UART 2 instead of 1
+HardwareSerial toAndFromFC(1);
 ReefwingMSP msp;
 
 // --- SHARED DATA ---
@@ -29,6 +29,13 @@ unsigned long lastDataTime = 0;
 
 void setup() {
   console.begin(115200);
+
+  // Critical S3 delay to let the USB handshake finish
+  unsigned long startWait = millis();
+  while (!console && millis() - startWait < 3000) delay(10); 
+
+  console.println("\n--- P-51 COCKPIT: POWER ON ---");
+
   // 1. TFT Initialization (Using your hardware pins 10-14 via User_Setup.h)
   tft.init();
   tft.setRotation(1);
@@ -39,8 +46,7 @@ void setup() {
   // 2. MSP / FC Initialization
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
   msp.begin(toAndFromFC);
-  console.println("--- UART CHECK --- ");
-
+    console.println("FC UART: Initialized on Pins 1/2");
   // 3. FC Scan (5 second window to detect iNav)
   unsigned long startScan = millis();
   while (millis() - startScan < 5000) {
@@ -52,6 +58,7 @@ void setup() {
     }
   }
   lastDataTime = millis(); // Reset this so loop doesn't immediately time out
+  console.println("System Ready.");
 }
 
 bool updateMSP() {
