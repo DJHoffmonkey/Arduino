@@ -10,15 +10,14 @@
 
 // --- CONSOLE ALIAS ---
 // Change 'Serial' to 'Serial0' here if the USB port is still silent
-#define console Serial
+#define console Serial0
 
-// --- HARDWARE CONFIG (S3 One-Side) ---
-#define RX_FROM_FC 18
-#define TX_TO_FC 17
+#define RX_FROM_FC 44 
+#define TX_TO_FC 43
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
-HardwareSerial toAndFromFC(1);
+HardwareSerial toAndFromFC(2); // Use UART 2 instead of 1
 ReefwingMSP msp;
 
 // --- SHARED DATA ---
