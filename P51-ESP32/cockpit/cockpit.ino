@@ -50,39 +50,33 @@ void drawHorizon(int x, int y, float rll, float ptch) {
     }
   }
 
-  // 2. The Fixed "Bomb" Marker (TDC)
-  // This is static at the top of the dial
-  canvas.fillSmoothRoundRect(cx - 2, cy - 36, 4, 8, 1, TFT_WHITE); // Stem
-  canvas.fillTriangle(cx - 3, cy - 30, cx + 3, cy - 30, cx, cy - 26, TFT_WHITE); // Tip
+  // 2. FIXED TDC MARKER (Just the triangle pointing down)
+  // Base at y=4, Tip at y=12
+  canvas.fillTriangle(cx - 5, 4, cx + 5, 4, cx, 12, TFT_YELLOW);
 
-  // 3. Static Bank Ticks (30, 60 deg)
+  // 3. Bank Ticks (Yellow)
   for (int a = -60; a <= 60; a += 30) {
-    if (a == 0) continue; // Skip 0 as the "Bomb" is there
+    if (a == 0) continue; 
     float tr = (a - 90) * (PI / 180.0);
     canvas.drawLine(cx + (cr-4)*cos(tr), cy + (cr-4)*sin(tr), 
-                    cx + cr*cos(tr), cy + cr*sin(tr), P51_RADIUM);
+                    cx + cr*cos(tr), cy + cr*sin(tr), TFT_YELLOW);
   }
 
-  // 4. THE FORK / TRIDENT (Mechanical Look)
-  // Central Pin Head
-  canvas.fillCircle(cx, cy, 1.5, TFT_YELLOW); 
+  // 4. THE TRIDENT (Floating Center Reference)
+  canvas.fillCircle(cx, cy, 3, TFT_YELLOW); // Bold Center Dot
   
-  // The "U" Shape (The fork body) - drawn in dark grey
-  canvas.drawSmoothArc(cx, cy, 12, 10, 120, 240, 0x4228, P51_SKY);
-  canvas.fillRect(cx - 1, cy, 2, 10, 0x4228); // Bottom support
+  // Horizontal wings only
+  canvas.fillRect(cx - 20, cy - 1.5, 12, 3, TFT_YELLOW); // Left
+  canvas.fillRect(cx + 8, cy - 1.5, 12, 3, TFT_YELLOW);  // Right
 
-  // The Yellow Tips (The actual reference marks)
-  // Left Wing Tip
-  canvas.fillRect(cx - 18, cy - 1, 10, 2, TFT_YELLOW); 
-  // Right Wing Tip
-  canvas.fillRect(cx + 8, cy - 1, 10, 2, TFT_YELLOW); 
-
-  // 5. Dark Text
+  // 5. Text
   canvas.setTextColor(0x2104); 
   canvas.drawCentreString("AN 5736-1A", cx, 72, 1);
 
   canvas.pushSprite(x - 40, y - 40);
 }
+
+
 
 // --- #8 ALTIMETER (9mm -> r29) ---
 void drawAltimeter(int x, int y, float meters) {
