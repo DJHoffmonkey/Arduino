@@ -20,6 +20,7 @@ ReefwingMSP msp;
 // --- SHARED DATA ---
 float roll, pitch, alt, airSpeed, vsi, heading, vBat;
 bool isBenchMode = true;
+bool currentlyReceiving = false;
 unsigned long lastRequest = 0;
 unsigned long lastDataTime = 0;
 
@@ -38,33 +39,36 @@ void setup() {
   // 3. FC Scan (5 second window to detect iNav)
   unsigned long startScan = millis();
   while (millis() - startScan < 5000) {
-    msp.request(MSP_ATTITUDE);
-    delay(100);
-    if (updateMSP()) {
+    msp.request(MSP_ATTITUDE, NULL, 0);
+    delay(100); // Give the FC time to process    
+    if (updateMSP()) { // Check if the "Promise" was returned
       isBenchMode = false;
       break;
     }
   }
-  lastDataTime = millis();
+  lastDataTime = millis(); // Reset this so loop doesn't immediately time out
 }
 
-// --- MSP ABSTRACTION LAYER ---
 bool updateMSP() {
   uint8_t msp_id;
   uint8_t payload[32];
   uint8_t size;
 
+  // msp.recv returns true ONLY when a valid packet is fully assembled
   if (msp.recv(&msp_id, payload, sizeof(payload), &size)) {
     lastDataTime = millis();
+    currentlyReceiving = true;
+
     switch (msp_id) {
       case MSP_ATTITUDE:
+        // payload[0]/[1] = Roll, [2]/[3] = Pitch, [4]/[5] = Heading
         roll = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
         pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
         heading = (int16_t)(payload[4] | (payload[5] << 8));
         break;
       case MSP_ALTITUDE:
+        // payload[0-3] = Alt (cm), payload[4-5] = Vario (cm/s)
         alt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)) * 0.0328084;
-        // Vertical speed from iNav (cm/s -> 1000s ft/min)
         vsi = ((int16_t)(payload[4] | (payload[5] << 8)) * 1.9685) / 1000.0;
         break;
       case MSP_ANALOG:
@@ -411,8 +415,8 @@ void drawVSI(int x, int y, float vspd) {
 }
 
 void loop() {
-  if (isBenchMode) {
-    // FALLBACK: Your Physics Sweeps
+ if (isBenchMode) {
+    // 1. BENCH PHYSICS (Only runs if no FC was found at boot)
     float t = millis() / 1000.0;
     airSpeed = 45 + sin(t * 0.5) * 35;
     alt = 225.0 + (sin(t * 0.2) * 225.0);
@@ -421,20 +425,24 @@ void loop() {
     vsi = cos(t * 0.2) * 4.0;
     heading += 0.2;
     if (heading >= 360) heading = 0;
-  } else {
-    // FLIGHT: Request Cycle (25ms intervals)
+  } 
+  else {
+    // 2. FLIGHT DATA ACQUISITION
     if (millis() - lastRequest > 25) {
       static int step = 0;
       uint8_t cycle[] = {MSP_ATTITUDE, MSP_ALTITUDE, MSP_ANALOG};
-      msp.request(cycle[step]);
+      msp.request(cycle[step], NULL, 0);
       step = (step + 1) % 3;
       lastRequest = millis();
     }
-    updateMSP();
     
-    // Safety: If no data for 1s, flip back to bench mode (or frozen state)
-    if (millis() - lastDataTime > 1000) isBenchMode = true; 
+    updateMSP();
+
+    // 3. TELEMETRY STATUS (Replaces the 'flick back' logic)
+    // currentlyReceiving will be true if we've had a packet in the last 500ms
+    currentlyReceiving = (millis() - lastDataTime < 500);
   }
+  
 
   // --- RENDER ALL GAUGES ---
   // TOP ROW
