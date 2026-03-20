@@ -290,59 +290,62 @@ void drawVSI(int x, int y, float vspd) {
   canvas.fillSprite(P51_CHARCOAL);
   int cx = 40, cy = 40;
   
-  // 1. Ultra-Dark Background
+  // 1. Background & Hub
   canvas.fillRect(0, 0, 80, 80, 0x2104); 
-  // Shrunk Hub: Radius 18 (36px diameter)
-  canvas.fillSmoothCircle(cx, cy, 18, 0x0841); 
+  canvas.fillSmoothCircle(cx, cy, 14, 0x0841); // Tiny hub for max space
 
   canvas.setTextColor(P51_RADIUM);
   
-  // 2. The Scale - Pulled Inward
-  float scale[] = {0.0, 1.0, 2.0, 4.0, 6.0};
-  float offsets[] = {0, 32, 60, 95, 125}; 
+  // 2. The Left-Side Scale (1, 2, 4) - PULLED TIGHT
+  float scale[] = {1.0, 2.0, 4.0};
+  float offsets[] = {32, 65, 110}; 
   
-  for (int i = 0; i < 5; i++) {
-    // UP SIDE
-    float aUp = 180 - offsets[i];
-    float rUp = aUp * (PI / 180.0);
-    if (scale[i] != 0) {
-        // Numbers pulled in to 25px radius (from 29px)
-        canvas.drawCentreString(String((int)scale[i]), cx + 25 * cos(rUp), cy + 25 * sin(rUp) - 4, 2);
-    }
-    // Ticks pulled in to start at 30px (from 33px)
-    canvas.drawLine(cx + 30 * cos(rUp), cy + 30 * sin(rUp), cx + 40 * cos(rUp), cy + 40 * sin(rUp), P51_RADIUM);
-
-    // DOWN SIDE
-    float aDn = 180 + offsets[i];
-    float rDn = aDn * (PI / 180.0);
-    if (scale[i] != 0) {
-        canvas.drawCentreString(String((int)scale[i]), cx + 25 * cos(rDn), cy + 25 * sin(rDn) - 4, 2);
-    }
-    canvas.drawLine(cx + 30 * cos(rDn), cy + 30 * sin(rDn), cx + 40 * cos(rDn), cy + 40 * sin(rDn), P51_RADIUM);
+  for (int i = 0; i < 3; i++) {
+    float rUp = (180 - offsets[i]) * (PI / 180.0);
+    float rDn = (180 + offsets[i]) * (PI / 180.0);
+    
+    // Numbers: Tucked in to 20px radius so they are visible through the hole
+    canvas.drawCentreString(String((int)scale[i]), cx + 20 * cos(rUp), cy + 20 * sin(rUp) - 4, 2);
+    canvas.drawCentreString(String((int)scale[i]), cx + 20 * cos(rDn), cy + 20 * sin(rDn) - 4, 2);
+    
+    // Ticks: Starting at 26px and reaching to the bezel
+    canvas.drawLine(cx+26*cos(rUp), cy+26*sin(rUp), cx+38*cos(rUp), cy+38*sin(rUp), P51_RADIUM);
+    canvas.drawLine(cx+26*cos(rDn), cy+26*sin(rDn), cx+38*cos(rDn), cy+38*sin(rDn), P51_RADIUM);
   }
 
-  // 3. Shrunken Labels (Font 1) - Nudged Right for Clearance
-  canvas.setTextColor(P51_RADIUM);
-  canvas.drawCentreString("climb", cx + 14, cy - 4, 1); 
+  // 3. The Bracket Logic - Back to the LEFT (9 o'clock)
+  // These are the small arrows/brackets near the '0' position
+  canvas.drawLine(2, cy - 8, 8, cy - 8, P51_RADIUM); // Top horizontal
+  canvas.drawLine(8, cy - 12, 8, cy - 4, P51_RADIUM); // Top vertical (UP)
   
-  canvas.setTextColor(0x4228); 
-  canvas.drawCentreString("up", cx - 18, cy - 10, 1);
-  canvas.drawCentreString("down", cx - 18, cy + 2, 1);
+  canvas.drawLine(2, cy + 8, 8, cy + 8, P51_RADIUM); // Bottom horizontal
+  canvas.drawLine(8, cy + 4, 8, cy + 12, P51_RADIUM); // Bottom vertical (DOWN)
 
-  // 4. Needle Logic (Stays the same, just slightly shorter to match new scale)
+  // 4. The "Single 6" at 3 o'clock (Far Right)
+  canvas.drawCentreString("6", cx + 24, cy - 4, 2);
+  canvas.drawLine(cx + 32, cy, cx + 40, cy, P51_RADIUM); // 6 o'clock tick
+
+  // 5. Zero Marker (9 o'clock horizontal)
+  canvas.drawLine(0, cy, 10, cy, P51_RADIUM);
+
+  // 6. "CLIMB" 
+  canvas.setTextSize(1);
+  canvas.drawCentreString("CLIMB", cx + 10, cy - 4, 1); 
+
+  // 7. Needle Logic
   float absV = abs(vspd);
   float move = 0;
   if (absV <= 1.0)      move = absV * 32.0;
-  else if (absV <= 2.0) move = 32.0 + (absV - 1.0) * 28.0;
-  else if (absV <= 4.0) move = 60.0 + (absV - 2.0) * 17.5;
-  else                  move = 95.0 + (constrain(absV, 4, 6) - 4.0) * 15.0;
+  else if (absV <= 2.0) move = 32.0 + (absV - 1.0) * 33.0;
+  else if (absV <= 4.0) move = 65.0 + (absV - 2.0) * 45.0; // Adjusted to meet at the 6
+  else                  move = 110.0 + (constrain(absV, 4, 6) - 4.0) * 35.0;
 
   float finalDeg = (vspd >= 0) ? (180.0 - move) : (180.0 + move);
   float nRad = finalDeg * (PI / 180.0);
   
-  // Needle (Length adjusted to 36px to match pulled-in ticks)
-  canvas.drawLine(cx+1, cy+1, cx+1 + 36*cos(nRad), cy+1 + 36*sin(nRad), 0x0841);
-  canvas.drawWideLine(cx, cy, cx + 36*cos(nRad), cy + 36*sin(nRad), 2, TFT_WHITE, 0x0841);
+  // Needle
+  canvas.drawLine(cx+1, cy+1, cx+1 + 35*cos(nRad), cy+1 + 35*sin(nRad), 0x0841);
+  canvas.drawWideLine(cx, cy, cx + 35*cos(nRad), cy + 35*sin(nRad), 2, TFT_WHITE, 0x0841);
 
   canvas.fillCircle(cx, cy, 3, TFT_BLACK);
   canvas.pushSprite(x - 40, y - 40);
