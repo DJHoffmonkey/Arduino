@@ -290,13 +290,14 @@ void drawVSI(int x, int y, float vspd) {
   canvas.fillSprite(P51_CHARCOAL);
   int cx = 40, cy = 40;
   
-  // 1. Ultra-Dark "Oil Stained" Background
+  // 1. Ultra-Dark Background
   canvas.fillRect(0, 0, 80, 80, 0x2104); 
-  canvas.fillSmoothCircle(cx, cy, 20, 0x0841); // Almost black center hub
+  // Shrunk Hub: Radius 18 (36px diameter)
+  canvas.fillSmoothCircle(cx, cy, 18, 0x0841); 
 
   canvas.setTextColor(P51_RADIUM);
   
-  // 2. The Scale - 0 at 9 o'clock
+  // 2. The Scale - Pulled Inward
   float scale[] = {0.0, 1.0, 2.0, 4.0, 6.0};
   float offsets[] = {0, 32, 60, 95, 125}; 
   
@@ -305,29 +306,30 @@ void drawVSI(int x, int y, float vspd) {
     float aUp = 180 - offsets[i];
     float rUp = aUp * (PI / 180.0);
     if (scale[i] != 0) {
-        // Nudged numbers further out (29px) to clear the "CLIMB" area
-        canvas.drawCentreString(String((int)scale[i]), cx + 29 * cos(rUp), cy + 29 * sin(rUp) - 4, 2);
+        // Numbers pulled in to 25px radius (from 29px)
+        canvas.drawCentreString(String((int)scale[i]), cx + 25 * cos(rUp), cy + 25 * sin(rUp) - 4, 2);
     }
-    canvas.drawLine(cx + 33 * cos(rUp), cy + 33 * sin(rUp), cx + 40 * cos(rUp), cy + 40 * sin(rUp), P51_RADIUM);
+    // Ticks pulled in to start at 30px (from 33px)
+    canvas.drawLine(cx + 30 * cos(rUp), cy + 30 * sin(rUp), cx + 40 * cos(rUp), cy + 40 * sin(rUp), P51_RADIUM);
 
     // DOWN SIDE
     float aDn = 180 + offsets[i];
     float rDn = aDn * (PI / 180.0);
     if (scale[i] != 0) {
-        canvas.drawCentreString(String((int)scale[i]), cx + 29 * cos(rDn), cy + 29 * sin(rDn) - 4, 2);
+        canvas.drawCentreString(String((int)scale[i]), cx + 25 * cos(rDn), cy + 25 * sin(rDn) - 4, 2);
     }
-    canvas.drawLine(cx + 33 * cos(rDn), cy + 33 * sin(rDn), cx + 40 * cos(rDn), cy + 40 * sin(rDn), P51_RADIUM);
+    canvas.drawLine(cx + 30 * cos(rDn), cy + 30 * sin(rDn), cx + 40 * cos(rDn), cy + 40 * sin(rDn), P51_RADIUM);
   }
 
-  // 3. Shrunken Labels (Font 1 for everything)
+  // 3. Shrunken Labels (Font 1) - Nudged Right for Clearance
   canvas.setTextColor(P51_RADIUM);
-  canvas.drawCentreString("CLIMB", cx + 10, cy - 4, 1); // Size 1 fits perfectly now
+  canvas.drawCentreString("climb", cx + 14, cy - 4, 1); 
   
-  canvas.setTextColor(0x4228); // Muted grey for sub-labels
-  canvas.drawCentreString("UP", cx - 22, cy - 10, 1);
-  canvas.drawCentreString("DOWN", cx - 22, cy + 2, 1);
+  canvas.setTextColor(0x4228); 
+  canvas.drawCentreString("up", cx - 18, cy - 10, 1);
+  canvas.drawCentreString("down", cx - 18, cy + 2, 1);
 
-  // 4. Needle Logic
+  // 4. Needle Logic (Stays the same, just slightly shorter to match new scale)
   float absV = abs(vspd);
   float move = 0;
   if (absV <= 1.0)      move = absV * 32.0;
@@ -338,9 +340,9 @@ void drawVSI(int x, int y, float vspd) {
   float finalDeg = (vspd >= 0) ? (180.0 - move) : (180.0 + move);
   float nRad = finalDeg * (PI / 180.0);
   
-  // Needle (Narrower shadow for 1/8th scale)
-  canvas.drawLine(cx+1, cy+1, cx+1 + 38*cos(nRad), cy+1 + 38*sin(nRad), 0x0841);
-  canvas.drawWideLine(cx, cy, cx + 38*cos(nRad), cy + 38*sin(nRad), 2, TFT_WHITE, 0x0841);
+  // Needle (Length adjusted to 36px to match pulled-in ticks)
+  canvas.drawLine(cx+1, cy+1, cx+1 + 36*cos(nRad), cy+1 + 36*sin(nRad), 0x0841);
+  canvas.drawWideLine(cx, cy, cx + 36*cos(nRad), cy + 36*sin(nRad), 2, TFT_WHITE, 0x0841);
 
   canvas.fillCircle(cx, cy, 3, TFT_BLACK);
   canvas.pushSprite(x - 40, y - 40);
