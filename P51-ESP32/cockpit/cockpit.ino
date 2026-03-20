@@ -53,26 +53,31 @@ bool updateMSP() {
   uint8_t msp_id;
   uint8_t payload[32];
   uint8_t size;
+  Serial.println("--- gonna talk to MSP ");
 
-  // msp.recv returns true ONLY when a valid packet is fully assembled
+  // 1. Check if the library sees a valid packet
   if (msp.recv(&msp_id, payload, sizeof(payload), &size)) {
     lastDataTime = millis();
     currentlyReceiving = true;
 
+    Serial.print("--- MSP RECEIVED: ID ");
+    Serial.print(msp_id);
+    Serial.print(" | Size: ");
+    Serial.println(size);
+
     switch (msp_id) {
       case MSP_ATTITUDE:
-        // payload[0]/[1] = Roll, [2]/[3] = Pitch, [4]/[5] = Heading
         roll = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
         pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
         heading = (int16_t)(payload[4] | (payload[5] << 8));
         break;
       case MSP_ALTITUDE:
-        // payload[0-3] = Alt (cm), payload[4-5] = Vario (cm/s)
         alt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)) * 0.0328084;
         vsi = ((int16_t)(payload[4] | (payload[5] << 8)) * 1.9685) / 1000.0;
         break;
       case MSP_ANALOG:
         vBat = payload[0] / 10.0;
+        Serial.print("VBAT: "); Serial.println(vBat);
         break;
     }
     return true;
