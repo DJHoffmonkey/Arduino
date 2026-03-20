@@ -20,18 +20,69 @@ void setup() {
   canvas.setTextDatum(MC_DATUM);
 }
 
-// --- #11 AIRSPEED (9mm -> r29) ---
-void drawAirspeed(int x, int y, float s) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx=40, cy=40, r=29;
-  canvas.drawCircle(cx, cy, r, P51_RADIUM);
-  for(int i=0; i<=100; i+=20){
-    float ang = map(i, 0, 100, -210, 120) * PI/180.0;
-    canvas.drawNumber(i/10, cx+20*cos(ang), cy+20*sin(ang), 1); // Shorthand 2, 4, 6
+// Updated mapping for 10mph @ 75 degrees
+float getAirspeedAngle(float mph) {
+  float deg = -90; // Start at 12 o'clock
+  
+  if (mph <= 10.0) {
+    // 0 to 10 mph = 75 degrees of sweep
+    deg += (mph / 10.0) * 75.0;
+  } else if (mph <= 30.0) {
+    // 10 to 30 mph = 105 degrees of sweep (3 o'clock is 90, 6 o'clock is 180)
+    // This lands '30' exactly at 6 o'clock (180 deg from start)
+    deg += 75.0 + ((mph - 10.0) / 20.0) * 105.0;
+  } else {
+    // 30 to 100 mph = Remaining 180 degrees (6 o'clock back to 12)
+    deg += 180.0 + ((mph - 30.0) / 70.0) * 180.0;
   }
-  float nAng = map(constrain(s,0,100), 0, 100, -210, 120) * PI/180.0;
-  canvas.drawLine(cx, cy, cx+(r-3)*cos(nAng), cy+(r-3)*sin(nAng), P51_DIRTY_W);
-  canvas.pushSprite(x-40, y-40);
+  return deg;
+}
+
+void drawAirspeed(int x, int y, float speed) {
+  canvas.fillSprite(P51_CHARCOAL);
+  int cx = 40, cy = 40;
+  
+  canvas.fillSmoothCircle(cx, cy, 33, P51_EARTH); 
+  canvas.fillSmoothCircle(cx, cy, 24, 0x18C3); 
+
+  canvas.setTextColor(P51_RADIUM);
+  
+  // Custom numbers as requested
+  int labels[] = {10, 20, 30, 50, 70, 90};
+  int labelCount = 6;
+
+  for (int i = 0; i <= 100; i += 2) {
+    float angleDeg = getAirspeedAngle((float)i);
+    float rad = angleDeg * (PI / 180.0);
+    
+    bool isLabel = false;
+    for(int k=0; k<labelCount; k++) { if(i == labels[k]) isLabel = true; }
+
+    if (isLabel) {
+      int tx = cx + 24 * cos(rad); // Nudged in 1px to avoid bezel
+      int ty = cy + 24 * sin(rad);
+      canvas.drawCentreString(String(i), tx, ty - 4, 2);
+      canvas.drawLine(cx + 28 * cos(rad), cy + 28 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+    } else if (i % 10 == 0 || i == 0) {
+      canvas.drawLine(cx + 29 * cos(rad), cy + 29 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+    } else {
+      canvas.drawLine(cx + 31 * cos(rad), cy + 31 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+    }
+  }
+
+  canvas.setTextColor(P51_RADIUM);
+  canvas.drawCentreString("MPH", cx, cy - 12, 1); 
+
+  float needleAngle = getAirspeedAngle(constrain(speed, 0, 100));
+  float sRad = needleAngle * (PI / 180.0);
+  
+  // Shadow
+  canvas.drawLine(cx+1, cy+1, cx+1 + 32*cos(sRad), cy+1 + 32*sin(sRad), 0x0841);
+  // Needle
+  canvas.drawWideLine(cx, cy, cx + 32*cos(sRad), cy + 32*sin(sRad), 2, TFT_WHITE, 0x18C3);
+
+  canvas.fillCircle(cx, cy, 3, TFT_BLACK);
+  canvas.pushSprite(x - 40, y - 40);
 }
 
 void drawHorizon(int x, int y, float rll, float ptch) {
