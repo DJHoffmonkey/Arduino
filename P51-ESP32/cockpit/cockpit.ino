@@ -8,6 +8,10 @@
 #define P51_SKY      0x641D 
 #define P51_EARTH    0x4221 
 
+// --- CONSOLE ALIAS ---
+// Change 'Serial' to 'Serial0' here if the USB port is still silent
+#define console Serial
+
 // --- HARDWARE CONFIG (S3 One-Side) ---
 #define RX_FROM_FC 18
 #define TX_TO_FC 17
@@ -25,6 +29,7 @@ unsigned long lastRequest = 0;
 unsigned long lastDataTime = 0;
 
 void setup() {
+  console.begin(115200);
   // 1. TFT Initialization (Using your hardware pins 10-14 via User_Setup.h)
   tft.init();
   tft.setRotation(1);
@@ -35,6 +40,7 @@ void setup() {
   // 2. MSP / FC Initialization
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
   msp.begin(toAndFromFC);
+  console.println("--- UART CHECK --- ");
 
   // 3. FC Scan (5 second window to detect iNav)
   unsigned long startScan = millis();
@@ -53,17 +59,17 @@ bool updateMSP() {
   uint8_t msp_id;
   uint8_t payload[32];
   uint8_t size;
-  Serial.println("--- gonna talk to MSP ");
+  console.println("--- gonna talk to MSP --- ");
 
   // 1. Check if the library sees a valid packet
   if (msp.recv(&msp_id, payload, sizeof(payload), &size)) {
     lastDataTime = millis();
     currentlyReceiving = true;
 
-    Serial.print("--- MSP RECEIVED: ID ");
-    Serial.print(msp_id);
-    Serial.print(" | Size: ");
-    Serial.println(size);
+    console.print("--- MSP RECEIVED: ID ");
+    console.print(msp_id);
+    console.print(" | Size: ");
+    console.println(size);
 
     switch (msp_id) {
       case MSP_ATTITUDE:
@@ -77,7 +83,7 @@ bool updateMSP() {
         break;
       case MSP_ANALOG:
         vBat = payload[0] / 10.0;
-        Serial.print("VBAT: "); Serial.println(vBat);
+        console.print("VBAT: "); console.println(vBat);
         break;
     }
     return true;
