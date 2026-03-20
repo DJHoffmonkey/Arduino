@@ -1,4 +1,5 @@
 #include <TFT_eSPI.h>
+#include <ReefwingMSP.h>
 
 // --- P-51 VINTAGE PALETTE ---
 #define P51_CHARCOAL 0x18C3
@@ -7,17 +8,72 @@
 #define P51_SKY      0x641D 
 #define P51_EARTH    0x4221 
 
+// --- HARDWARE CONFIG (S3 One-Side) ---
+#define RX_FROM_FC 18
+#define TX_TO_FC 17
+
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
+HardwareSerial toAndFromFC(1);
+ReefwingMSP msp;
 
-float roll, pitch, alt, airSpeed, vsi, heading;
+// --- SHARED DATA ---
+float roll, pitch, alt, airSpeed, vsi, heading, vBat;
+bool isBenchMode = true;
+unsigned long lastRequest = 0;
+unsigned long lastDataTime = 0;
 
 void setup() {
+  // 1. TFT Initialization (Using your hardware pins 10-14 via User_Setup.h)
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
   canvas.createSprite(80, 80); // Canvas sized for the 11.1mm gauge
   canvas.setTextDatum(MC_DATUM);
+
+  // 2. MSP / FC Initialization
+  toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
+  msp.begin(toAndFromFC);
+
+  // 3. FC Scan (5 second window to detect iNav)
+  unsigned long startScan = millis();
+  while (millis() - startScan < 5000) {
+    msp.request(MSP_ATTITUDE);
+    delay(100);
+    if (updateMSP()) {
+      isBenchMode = false;
+      break;
+    }
+  }
+  lastDataTime = millis();
+}
+
+// --- MSP ABSTRACTION LAYER ---
+bool updateMSP() {
+  uint8_t msp_id;
+  uint8_t payload[32];
+  uint8_t size;
+
+  if (msp.recv(&msp_id, payload, sizeof(payload), &size)) {
+    lastDataTime = millis();
+    switch (msp_id) {
+      case MSP_ATTITUDE:
+        roll = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
+        pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
+        heading = (int16_t)(payload[4] | (payload[5] << 8));
+        break;
+      case MSP_ALTITUDE:
+        alt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)) * 0.0328084;
+        // Vertical speed from iNav (cm/s -> 1000s ft/min)
+        vsi = ((int16_t)(payload[4] | (payload[5] << 8)) * 1.9685) / 1000.0;
+        break;
+      case MSP_ANALOG:
+        vBat = payload[0] / 10.0;
+        break;
+    }
+    return true;
+  }
+  return false;
 }
 
 // Updated mapping for 10mph @ 75 degrees
@@ -355,25 +411,42 @@ void drawVSI(int x, int y, float vspd) {
 }
 
 void loop() {
-  // 1. Get your flight data (Bench mode for now)
-  float t = millis() / 1000.0;
-  airSpeed = 45 + sin(t*0.5)*35;
-  alt = 60 + sin(t*0.2)*55;
-  roll = sin(t)*35;
-  pitch = cos(t*0.7)*10;
-  vsi = cos(t*0.2)*8;
+  if (isBenchMode) {
+    // FALLBACK: Your Physics Sweeps
+    float t = millis() / 1000.0;
+    airSpeed = 45 + sin(t * 0.5) * 35;
+    alt = 225.0 + (sin(t * 0.2) * 225.0);
+    roll = sin(t) * 35;
+    pitch = cos(t * 0.7) * 10;
+    vsi = cos(t * 0.2) * 4.0;
+    heading += 0.2;
+    if (heading >= 360) heading = 0;
+  } else {
+    // FLIGHT: Request Cycle (25ms intervals)
+    if (millis() - lastRequest > 25) {
+      static int step = 0;
+      uint8_t cycle[] = {MSP_ATTITUDE, MSP_ALTITUDE, MSP_ANALOG};
+      msp.request(cycle[step]);
+      step = (step + 1) % 3;
+      lastRequest = millis();
+    }
+    updateMSP();
+    
+    // Safety: If no data for 1s, flip back to bench mode (or frozen state)
+    if (millis() - lastDataTime > 1000) isBenchMode = true; 
+  }
 
-// --- 2.2" S3 STENCIL ALIGNMENT (NUDGED) ---
-
+  // --- RENDER ALL GAUGES ---
   // TOP ROW
-  drawAirspeed(33, 48, airSpeed);    // #11
-  drawTurn(140, 48, roll);           // #7
-  // HORIZON (#6): Moved from (245, 75) to (241, 55) 
-  // This is 4px Left (5%) and 20px Up (25%)
-  drawHorizon(253, 54, roll, pitch); 
 
+  drawAirspeed(33, 48, airSpeed); // #11
+  drawTurn(140, 48, heading); // #7 Changed roll to heading for the Gyro
+  drawHorizon(253, 54, roll, pitch); // #6 
   // BOTTOM ROW
-  drawAltimeter(33, 144, alt);       // #8
-  drawBank(146, 170, roll);          // #12
-  drawVSI(253, 170, vsi);            // #13
+  drawAltimeter(33, 144, alt); // #8
+  drawBank(146, 170, roll);  // #12
+  drawVSI(253, 170, vsi);  // #13
+
+
+
 }
