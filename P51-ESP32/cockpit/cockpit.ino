@@ -90,45 +90,59 @@ void drawAltimeter(int x, int y, float meters) {
 }
 
 void drawTurn(int x, int y, float heading) {
-  canvas.fillSprite(P51_CHARCOAL); // Dark face of the gauge
+  canvas.fillSprite(P51_CHARCOAL); 
   int cx = 40, cy = 40;
+  
+  int winY = cy - 18; 
+  int winH = 22;
+  int winLeft = cx - 28;
 
-  // 1. The "Window" Cutout
-  // A rectangular slot near the top, just like the real one
-  canvas.fillRect(cx - 25, cy - 25, 50, 18, TFT_BLACK); 
-  canvas.drawRect(cx - 25, cy - 25, 50, 18, 0x4228); // Subtle bezel frame
+  // 1. Internal Shadow
+  canvas.fillRect(winLeft, winY, 56, winH, 0x0841); 
 
-  // 2. The Rolling Drum Logic
-  // We draw the numbers and ticks. Since the window is small, 
-  // we only need to check a range of +/- 30 degrees around current heading.
+  // 2. The Drum Logic
   canvas.setTextColor(P51_RADIUM);
-  canvas.setTextSize(1);
+  
+  // Find the nearest 5-degree mark to the current heading to start the loop
+  float startAngle = floor(heading / 5.0) * 5.0;
 
-  for (int i = -30; i <= 30; i += 5) {
-    int angle = (int)(heading + i + 360) % 360;
-    // Map the angle to a horizontal pixel position in our window
-    int scrollX = cx + (i * 2); // 2 pixels per degree of rotation
+  for (float a = startAngle - 40; a <= startAngle + 40; a += 5) {
+    // Delta is how many degrees this tick is from the center (heading)
+    float delta = a - heading;
+    
+    // Parallax Math
+    float rad = delta * (PI / 180.0);
+    float scrollX = cx + (sin(rad) * 45); 
 
-    if (scrollX > cx - 22 && scrollX < cx + 22) {
-      // Draw major numbers every 30 degrees (3, 6, 9... 0 for 360)
-      if (angle % 30 == 0) {
-        String label = String(angle / 10);
-        if (angle == 0) label = "0";
-        canvas.drawCentreString(label, scrollX, cy - 22, 1);
-      } 
-    // Draw ticks every 5 degrees
-    canvas.drawFastVLine(scrollX, cy - 12, 4, P51_RADIUM);    }
+    // Normalize angle for labeling (0-35)
+    int displayAngle = ((int)(a + 3600) % 360);
+
+    if (scrollX > winLeft - 5 && scrollX < winLeft + 61) {
+      // Draw Tick for every 5 degrees
+      int tickLen = (displayAngle % 10 == 0) ? 7 : 4;
+      canvas.drawFastVLine((int)scrollX, winY + winH - tickLen - 2, tickLen, P51_RADIUM);
+
+      // Draw Number if it's a 30-degree mark (3, 6, 9... 0 for 360)
+      if (displayAngle % 30 == 0) {
+        String label = String(displayAngle / 10);
+        canvas.drawCentreString(label, (int)scrollX, winY + 2, 2);
+      }
+    }
   }
 
-  // 3. The Fixed Reference "Lubber Line"
-  // The white vertical line in the center of the window that you read against
-  canvas.fillRect(cx - 1, cy - 26, 2, 20, TFT_WHITE);
+  // 3. Masking (Paint over the bleed)
+  canvas.fillRect(0, 0, 80, winY, P51_CHARCOAL);             
+  canvas.fillRect(0, winY + winH, 80, 80 - (winY+winH), P51_CHARCOAL); 
+  canvas.fillRect(0, winY, winLeft, winH, P51_CHARCOAL);     
+  canvas.fillRect(winLeft + 56, winY, 80 - (winLeft+56), winH, P51_CHARCOAL); 
 
-  // 4. Gauge Labeling
-  canvas.setTextColor(0x2104); // Faint dark grey for engraved look
-  canvas.drawCentreString("DIRECTIONAL GYRO", cx, cy + 5, 1);
-  canvas.drawCentreString("AN 5735-1A", cx, cy + 15, 1);
+  // 4. Stationary Elements
+  canvas.drawRect(winLeft, winY, 56, winH, 0x4228); 
+  canvas.fillRect(cx - 1, winY - 3, 2, winH + 6, TFT_WHITE); 
 
+  canvas.setTextColor(0x4228); // Muted, aged grey
+  canvas.drawCentreString("DIREC.GYRO", cx, cy + 10, 1); // Size 1
+  canvas.drawCentreString("AN 5735-1A", cx, cy + 20, 1);
   canvas.pushSprite(x - 40, y - 40);
 }
 
