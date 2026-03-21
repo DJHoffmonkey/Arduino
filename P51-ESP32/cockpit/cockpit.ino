@@ -21,8 +21,6 @@ float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0
 bool isBenchMode = true;
 unsigned long lastRequestTime = 0;
 unsigned long lastDataTime = 0;
-float lastAltLog = -999.0, lastVBatLog = -999.0;
-unsigned long lastLogTime = 0;
 
 // --- MSP COMMAND IDS ---
 #define MSP_ATTITUDE 108
@@ -64,57 +62,43 @@ void sendMSPRequest(uint8_t cmd) {
 }
 
 bool parseMSP() {
-  // We need at least 6 bytes to even look at a packet
+  // We need at least the header (3), size (1), cmd (1), and crc (1) = 6 bytes
   if (toAndFromFC.available() < 6) return false;
 
-  // IMPORTANT: Don't consume bytes unless it's a '$'
+  // Sync to header
   if (toAndFromFC.peek() != '$') {
-    toAndFromFC.read(); // Discard one junk byte
+    toAndFromFC.read(); 
     return false;
   }
 
-  // If we are here, we see a '$'. Let's check the next two.
-  // We use readBytes to pull the header.
-  uint8_t header[3];
-  toAndFromFC.readBytes(header, 3);
-  
-  if (header[1] != 'M' || header[2] != '>') return false;
-
-  // SUCCESS: Valid MSP header found. 
-  isBenchMode = false; // LOCK OUT OF BENCH MODE FOREVER
+  // Read header
+  uint8_t head[3];
+  toAndFromFC.readBytes(head, 3);
+  if (head[1] != 'M' || head[2] != '>') return false;
 
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
-  uint8_t payload[32]; 
+  uint8_t payload[size];
   toAndFromFC.readBytes(payload, size);
-  uint8_t crc = toAndFromFC.read(); // Consume CRC
+  uint8_t crc = toAndFromFC.read(); 
 
-  // --- PRECISION OUTPUT ---
-  if (cmd == MSP_ALTITUDE) {
-    int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    alt = rawAlt / 30.48; 
-    vsi = (int16_t)(payload[4] | (payload[5] << 8));
-    
-    static float lastAltLog = -999;
-    if (abs(alt - lastAltLog) > 0.01) { // 0.01ft precision
-       console.printf("ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
-       lastAltLog = alt;
-    }
-  } 
-  else if (cmd == MSP_ANALOG) {
-    vBat = payload[0] / 10.0;
-    static float lastBatLog = -999;
-    if (abs(vBat - lastBatLog) > 0.1) {
-       console.printf("VBAT: %.2f V\n", vBat);
-       lastBatLog = vBat;
-    }
-  } 
-  else if (cmd == MSP_ATTITUDE) {
+  lastDataTime = millis();
+  isBenchMode = false;
+
+  if (cmd == MSP_ATTITUDE && size >= 6) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
     pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
     heading = (int16_t)(payload[4] | (payload[5] << 8));
+  } 
+  else if (cmd == MSP_ALTITUDE && size >= 6) {
+    int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+    alt = rawAlt / 30.48; // cm to feet
+    vsi = (int16_t)(payload[4] | (payload[5] << 8)); // cm/s
   }
-
+  else if (cmd == MSP_ANALOG && size >= 7) {
+    vBat = payload[0] / 10.0; // Voltage is 1st byte, unit is 0.1V
+  }
+  
   return true;
 }
 
@@ -470,6 +454,7 @@ void drawVSI(int x, int y, float vspd) {
 }
 
 void loop() {
+  static unsigned long lastFrame = 0;
   
   if (isBenchMode) {
     float t = millis() / 1000.0;
@@ -491,6 +476,6 @@ void loop() {
   drawAltimeter(33, 144, alt);
   drawBank(146, 170, roll);
   drawVSI(253, 170, vsi / 100.0); // Convert cm/s to m/s for display
-
+  
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
