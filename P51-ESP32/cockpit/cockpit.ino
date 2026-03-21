@@ -17,10 +17,9 @@ TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 
 // --- SHARED DATA ---
-float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0;
 bool isBenchMode = true;
-unsigned long lastRequestTime = 0;
-unsigned long lastDataTime = 0;
+float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0, lastAltLog = -999.0, lastVBatLog = -999.0;
+unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
 
 // --- MSP COMMAND IDS ---
 #define MSP_ATTITUDE 108
@@ -83,7 +82,7 @@ bool parseMSP() {
   uint8_t crc = toAndFromFC.read(); 
 
   lastDataTime = millis();
-  isBenchMode = false;
+  isBenchMode = false; // Once tripped, loop() will stop doing sine waves
 
   if (cmd == MSP_ATTITUDE && size >= 6) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
@@ -92,13 +91,30 @@ bool parseMSP() {
   } 
   else if (cmd == MSP_ALTITUDE && size >= 6) {
     int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    alt = rawAlt / 30.48; // cm to feet
-    vsi = (int16_t)(payload[4] | (payload[5] << 8)); // cm/s
+    alt = rawAlt / 30.48; 
+    vsi = (int16_t)(payload[4] | (payload[5] << 8));
+
+    // --- HIGH PRECISION CONSOLE LOGGING ---
+    // Only log if altitude changes by 0.01ft AND 100ms has passed
+    if (millis() - lastLogTime > 100) {
+      if (abs(alt - lastAltLog) > 0.01) {
+        console.printf("PRECISION ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
+        lastAltLog = alt;
+        lastLogTime = millis();
+      }
+    }
   }
   else if (cmd == MSP_ANALOG && size >= 7) {
-    vBat = payload[0] / 10.0; // Voltage is 1st byte, unit is 0.1V
+    vBat = payload[0] / 10.0;
+    
+    if (millis() - lastLogTime > 100) {
+      if (abs(vBat - lastVBatLog) > 0.0) {
+        console.printf("LIVE BATTERY: %.2f V\n", vBat);
+        lastVBatLog = vBat;
+        lastLogTime = millis();
+      }
+    }
   }
-  
   return true;
 }
 
@@ -116,8 +132,6 @@ void updateMSP() {
   while (toAndFromFC.available() >= 6) {
     parseMSP();
   }
-
-  if (millis() - lastDataTime > 2000) isBenchMode = true;
 }
 
 float getAirspeedAngle(float mph) {
