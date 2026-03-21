@@ -64,54 +64,57 @@ void sendMSPRequest(uint8_t cmd) {
 }
 
 bool parseMSP() {
+  // We need at least 6 bytes to even look at a packet
   if (toAndFromFC.available() < 6) return false;
 
-  if (toAndFromFC.peek() != '$') { toAndFromFC.read(); return false; }
+  // IMPORTANT: Don't consume bytes unless it's a '$'
+  if (toAndFromFC.peek() != '$') {
+    toAndFromFC.read(); // Discard one junk byte
+    return false;
+  }
 
-  uint8_t head[3];
-  toAndFromFC.readBytes(head, 3);
-  if (head[1] != 'M' || head[2] != '>') return false;
+  // If we are here, we see a '$'. Let's check the next two.
+  // We use readBytes to pull the header.
+  uint8_t header[3];
+  toAndFromFC.readBytes(header, 3);
+  
+  if (header[1] != 'M' || header[2] != '>') return false;
+
+  // SUCCESS: Valid MSP header found. 
+  isBenchMode = false; // LOCK OUT OF BENCH MODE FOREVER
 
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
-  uint8_t payload[size];
+  uint8_t payload[32]; 
   toAndFromFC.readBytes(payload, size);
-  uint8_t crc = toAndFromFC.read(); 
+  uint8_t crc = toAndFromFC.read(); // Consume CRC
 
-  isBenchMode = false; // Locked into Flight Mode
-
-  // Limit console spam to max 10 updates per second (100ms) 
-  // but still update the global variables every time
-  bool canLog = (millis() - lastLogTime > 100);
-
-  if (cmd == MSP_ATTITUDE && size >= 6) {
+  // --- PRECISION OUTPUT ---
+  if (cmd == MSP_ALTITUDE) {
+    int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+    alt = rawAlt / 30.48; 
+    vsi = (int16_t)(payload[4] | (payload[5] << 8));
+    
+    static float lastAltLog = -999;
+    if (abs(alt - lastAltLog) > 0.01) { // 0.01ft precision
+       console.printf("ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
+       lastAltLog = alt;
+    }
+  } 
+  else if (cmd == MSP_ANALOG) {
+    vBat = payload[0] / 10.0;
+    static float lastBatLog = -999;
+    if (abs(vBat - lastBatLog) > 0.1) {
+       console.printf("VBAT: %.2f V\n", vBat);
+       lastBatLog = vBat;
+    }
+  } 
+  else if (cmd == MSP_ATTITUDE) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
     pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
     heading = (int16_t)(payload[4] | (payload[5] << 8));
-  } 
-  else if (cmd == MSP_ALTITUDE && size >= 6) {
-    int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    alt = rawAlt / 30.48; // Precision conversion to feet
-    vsi = (int16_t)(payload[4] | (payload[5] << 8)); // Raw cm/s
-    
-    // Log if altitude moves by more than 0.01ft
-    if (canLog && abs(alt - lastAltLog) > 0.01) {
-      console.printf("PRECISION ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
-      lastAltLog = alt;
-      lastLogTime = millis();
-    }
   }
-  else if (cmd == MSP_ANALOG && size >= 7) {
-    vBat = payload[0] / 10.0;
-    
-    // Log if battery moves by 0.1V (or just changes at all)
-    if (canLog && abs(vBat - lastVBatLog) > 0.1) {
-      console.printf("BATTERY: %.2f V\n", vBat);
-      lastVBatLog = vBat;
-      lastLogTime = millis();
-    }
-  }
-  
+
   return true;
 }
 
@@ -467,7 +470,6 @@ void drawVSI(int x, int y, float vspd) {
 }
 
 void loop() {
-  static unsigned long lastFrame = 0;
   
   if (isBenchMode) {
     float t = millis() / 1000.0;
@@ -483,17 +485,12 @@ void loop() {
     updateMSP();
   }
 
-  // Limit rendering to ~30FPS to keep Core 1 happy
-  if (millis() - lastFrame > 33) {
-    drawAirspeed(33, 48, airSpeed);
-    drawTurn(140, 48, heading);
-    drawHorizon(253, 54, roll, pitch);
-    drawAltimeter(33, 144, alt);
-    drawBank(146, 170, roll);
-    drawVSI(253, 170, vsi / 100.0); // Convert cm/s to m/s for display
-    
-    lastFrame = millis();
-  }
-  
+  drawAirspeed(33, 48, airSpeed);
+  drawTurn(140, 48, heading);
+  drawHorizon(253, 54, roll, pitch);
+  drawAltimeter(33, 144, alt);
+  drawBank(146, 170, roll);
+  drawVSI(253, 170, vsi / 100.0); // Convert cm/s to m/s for display
+
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
