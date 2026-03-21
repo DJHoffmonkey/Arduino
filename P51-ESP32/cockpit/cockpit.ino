@@ -1,5 +1,4 @@
 #include <TFT_eSPI.h>
-#include <esp_log.h>
 
 // --- P-51 VINTAGE PALETTE ---
 #define P51_CHARCOAL 0x18C3
@@ -8,123 +7,114 @@
 #define P51_SKY      0x641D 
 #define P51_EARTH    0x4221 
 
-// --- CONSOLE ALIAS ---
-// Change 'Serial' to 'Serial0' here if the USB port is still silent
-#define console Serial0
-
+// --- HARDWARE CONFIG ---
+#define console Serial0      // USB Debugging
+#define toAndFromFC Serial1  // Hardware UART to Flight Controller
 #define RX_FROM_FC 18
 #define TX_TO_FC 17
-#define toAndFromFC Serial1
+
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
-ReefwingMSP msp;
 
 // --- SHARED DATA ---
-float roll, pitch, alt, airSpeed, vsi, heading, vBat;
+float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0;
 bool isBenchMode = true;
-bool currentlyReceiving = false;
-bool check = false;
-unsigned long lastRequest = 0;
+unsigned long lastRequestTime = 0;
 unsigned long lastDataTime = 0;
+
+// --- MSP COMMAND IDS ---
+#define MSP_ATTITUDE 108
+#define MSP_ALTITUDE 109
+#define MSP_ANALOG   110
 
 void setup() {
   console.begin(115200);
   while (!console);
-  delay(1000);
-  console.println("--- P-51 COCKPIT: RAW MSP MODE ---");
- console.println("\n--- P-51 COCKPIT: POWER ON ---");
+  delay(500);
+  console.println("--- P-51 COCKPIT: BOOTING ---");
 
-  // 1. TFT Initialization (Using your hardware pins 10-14 via User_Setup.h)
+  // 1. TFT Initialization
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
-  canvas.createSprite(80, 80); // Canvas sized for the 11.1mm gauge
+  canvas.createSprite(80, 80); 
   canvas.setTextDatum(MC_DATUM);
   
+  // 2. FC UART Initialization
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
   
+  // 3. INITIAL SCAN (5 Second Handshake)
+  console.println("Searching for Flight Controller...");
   unsigned long startScan = millis();
   while (millis() - startScan < 5000) {
-    // 1. CLEAR BUFFER
-    while(toAndFromFC.available()) toAndFromFC.read();
-
-    // 2. SEND RAW REQUEST (The Medium article's MSP_ATTITUDE packet)
-    // Header ($M<) + Size (0) + Type (108) + Checksum (108)
-    uint8_t mspAttitudeRequest[] = {0x24, 0x4D, 0x3C, 0x00, 0x6C, 0x6C};
-    toAndFromFC.write(mspAttitudeRequest, 6);
-
-    // 3. THE PATIENCE GAP: Give the FC 50ms to talk back
-    delay(50); 
-
-    // 4. MANUAL PARSE
-    if (toAndFromFC.available() >= 12) {
-      uint8_t data[12];
-      toAndFromFC.readBytes(data, 12);
-
-      // Verify header: $M> (0x24 0x4D 0x3E)
-      if (data[0] == '$' && data[1] == 'M' && data[2] == '>') {
-        // Data is at index 5, 6 (Roll), 7, 8 (Pitch)
-        // MSP is Little Endian: (High << 8) | Low
-        int16_t rRoll = (data[6] << 8) | data[5];
-        int16_t rPitch = (data[8] << 8) | data[7];
-        
-        roll = rRoll / 10.0;
-        pitch = rPitch / 10.0;
-
-        console.println("!!! FC CONNECTED !!!");
-        console.println("Roll: " + String(roll) + " Pitch: " + String(pitch));
-        isBenchMode = false;
-        break;
-      }
+    sendMSPRequest(MSP_ATTITUDE);
+    delay(50);
+    if (parseMSP()) {
+      isBenchMode = false;
+      console.println("!!! FC CONNECTED !!!");
+      break;
     }
-    console.println("Scanning... Buffer: " + String(toAndFromFC.available()));
     delay(200);
   }
-  console.println("System Ready.");
+  if (isBenchMode) console.println("FC Not Found. Entering Bench Mode.");
 }
 
-bool updateMSP() {
-  static unsigned long lastReq = 0;
-  
-  // 1. RATE LIMIT: Don't spam the FC. Request data every 100ms (10Hz)
-  if (millis() - lastReq > 100) {
-    uint8_t attReq[] = {0x24, 0x4D, 0x3C, 0x00, 0x6C, 0x6C}; // $M< (ID 108)
-    toAndFromFC.write(attReq, 6);
-    lastReq = millis();
-  }
+// --- CORE MSP LOGIC ---
 
-  // 2. CHECK THE BUFFER: We need at least 12 bytes for a full Attitude packet
-  if (toAndFromFC.available() >= 12) {
-    uint8_t buf[12];
-    
-    // Look for the Header ($M>)
-    if (toAndFromFC.peek() != '$') {
-      toAndFromFC.read(); // Trash the byte if it's not the start of a packet
-      return false; 
-    }
+void sendMSPRequest(uint8_t cmd) {
+  // Header ($M<) + Size (0) + Cmd + Checksum (which is just Cmd if size is 0)
+  uint8_t request[] = {0x24, 0x4D, 0x3C, 0x00, cmd, cmd};
+  toAndFromFC.write(request, 6);
+}
 
-    toAndFromFC.readBytes(buf, 12);
+bool parseMSP() {
+  if (toAndFromFC.available() < 6) return false;
 
-    // Verify it's actually the response for ID 108
-    if (buf[0] == '$' && buf[1] == 'M' && buf[2] == '>' && buf[4] == 108) {
-      // SUCCESS! Extract the data (Little Endian)
-      // buf[5/6] = Roll, buf[7/8] = Pitch, buf[9/10] = Heading
-      int16_t rRoll  = (buf[6] << 8) | buf[5];
-      int16_t rPitch = (buf[8] << 8) | buf[7];
-      int16_t rHead  = (buf[10] << 8) | buf[9];
+  if (toAndFromFC.read() == '$' && toAndFromFC.read() == 'M' && toAndFromFC.read() == '>') {
+    uint8_t size = toAndFromFC.read();
+    uint8_t cmd  = toAndFromFC.read();
+    uint8_t payload[size];
+    toAndFromFC.readBytes(payload, size);
+    uint8_t crc = toAndFromFC.read(); // Consume CRC byte
 
-      roll    = rRoll / 10.0;
-      pitch   = rPitch / 10.0;
-      heading = rHead;
-      
-      lastDataTime = millis();
+    lastDataTime = millis();
+    isBenchMode = false;
+
+    if (cmd == MSP_ATTITUDE) {
+      roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
+      pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
+      heading = (int16_t)(payload[4] | (payload[5] << 8));
+      return true;
+    } 
+    else if (cmd == MSP_ALTITUDE) {
+      // Altitude is 32-bit (4 bytes) in centimeters
+      int32_t rawAlt = (payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+      alt = rawAlt / 30.48; // Convert cm to feet (approx)
+      vsi = (int16_t)(payload[4] | (payload[5] << 8)) / 100.0; // cm/s to m/s
       return true;
     }
   }
   return false;
 }
 
-// Updated mapping for 10mph @ 75 degrees
+void updateMSP() {
+  static int cycle = 0;
+  
+  // Request a different packet every 40ms to keep the link saturated but clean
+  if (millis() - lastRequestTime > 40) {
+    cycle++;
+    if (cycle % 3 == 0) sendMSPRequest(MSP_ATTITUDE);
+    else if (cycle % 3 == 1) sendMSPRequest(MSP_ALTITUDE);
+    else sendMSPRequest(MSP_ANALOG);
+    lastRequestTime = millis();
+  }
+
+  parseMSP();
+
+  // Watchdog: If no data for 2s, drop back to demo physics
+  if (millis() - lastDataTime > 2000) isBenchMode = true;
+}
+
 float getAirspeedAngle(float mph) {
   float deg = -90; // Start at 12 o'clock
   
@@ -459,8 +449,8 @@ void drawVSI(int x, int y, float vspd) {
 }
 
 void loop() {
- if (isBenchMode) {
-    // 1. BENCH PHYSICS (Only runs if no FC was found at boot)
+  if (isBenchMode) {
+    // BENCH PHYSICS (Demo mode)
     float t = millis() / 1000.0;
     airSpeed = 45 + sin(t * 0.5) * 35;
     alt = 225.0 + (sin(t * 0.2) * 225.0);
@@ -469,35 +459,15 @@ void loop() {
     vsi = cos(t * 0.2) * 4.0;
     heading += 0.2;
     if (heading >= 360) heading = 0;
-  } 
-  else {
-    // 2. FLIGHT DATA ACQUISITION
-    if (millis() - lastRequest > 25) {
-      static int step = 0;
-      uint8_t cycle[] = {MSP_ATTITUDE, MSP_ALTITUDE, MSP_ANALOG};
-      step = (step + 1) % 3;
-      lastRequest = millis();
-    }
-    
+  } else {
     updateMSP();
-
-    // 3. TELEMETRY STATUS (Replaces the 'flick back' logic)
-    // currentlyReceiving will be true if we've had a packet in the last 500ms
-    currentlyReceiving = (millis() - lastDataTime < 500);
   }
-  
 
   // --- RENDER ALL GAUGES ---
-  // TOP ROW
-
-  drawAirspeed(33, 48, airSpeed); // #11
-  drawTurn(140, 48, heading); // #7 Changed roll to heading for the Gyro
-  drawHorizon(253, 54, roll, pitch); // #6 
-  // BOTTOM ROW
-  drawAltimeter(33, 144, alt); // #8
-  drawBank(146, 170, roll);  // #12
-  drawVSI(253, 170, vsi);  // #13
-
-
-
+  drawAirspeed(33, 48, airSpeed);
+  drawTurn(140, 48, heading);
+  drawHorizon(253, 54, roll, pitch);
+  drawAltimeter(33, 144, alt);
+  drawBank(146, 170, roll);
+  drawVSI(253, 170, vsi);
 }
