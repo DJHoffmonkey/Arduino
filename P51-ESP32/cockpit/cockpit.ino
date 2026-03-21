@@ -21,6 +21,8 @@ float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0
 bool isBenchMode = true;
 unsigned long lastRequestTime = 0;
 unsigned long lastDataTime = 0;
+float lastAltLog = -999.0, lastVBatLog = -999.0;
+unsigned long lastLogTime = 0;
 
 // --- MSP COMMAND IDS ---
 #define MSP_ATTITUDE 108
@@ -62,16 +64,10 @@ void sendMSPRequest(uint8_t cmd) {
 }
 
 bool parseMSP() {
-  // We need at least the header (3), size (1), cmd (1), and crc (1) = 6 bytes
   if (toAndFromFC.available() < 6) return false;
 
-  // Sync to header
-  if (toAndFromFC.peek() != '$') {
-    toAndFromFC.read(); 
-    return false;
-  }
+  if (toAndFromFC.peek() != '$') { toAndFromFC.read(); return false; }
 
-  // Read header
   uint8_t head[3];
   toAndFromFC.readBytes(head, 3);
   if (head[1] != 'M' || head[2] != '>') return false;
@@ -82,8 +78,11 @@ bool parseMSP() {
   toAndFromFC.readBytes(payload, size);
   uint8_t crc = toAndFromFC.read(); 
 
-  lastDataTime = millis();
-  isBenchMode = false;
+  isBenchMode = false; // Locked into Flight Mode
+
+  // Limit console spam to max 10 updates per second (100ms) 
+  // but still update the global variables every time
+  bool canLog = (millis() - lastLogTime > 100);
 
   if (cmd == MSP_ATTITUDE && size >= 6) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
@@ -92,11 +91,25 @@ bool parseMSP() {
   } 
   else if (cmd == MSP_ALTITUDE && size >= 6) {
     int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    alt = rawAlt / 30.48; // cm to feet
-    vsi = (int16_t)(payload[4] | (payload[5] << 8)); // cm/s
+    alt = rawAlt / 30.48; // Precision conversion to feet
+    vsi = (int16_t)(payload[4] | (payload[5] << 8)); // Raw cm/s
+    
+    // Log if altitude moves by more than 0.01ft
+    if (canLog && abs(alt - lastAltLog) > 0.01) {
+      console.printf("PRECISION ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
+      lastAltLog = alt;
+      lastLogTime = millis();
+    }
   }
   else if (cmd == MSP_ANALOG && size >= 7) {
-    vBat = payload[0] / 10.0; // Voltage is 1st byte, unit is 0.1V
+    vBat = payload[0] / 10.0;
+    
+    // Log if battery moves by 0.1V (or just changes at all)
+    if (canLog && abs(vBat - lastVBatLog) > 0.1) {
+      console.printf("BATTERY: %.2f V\n", vBat);
+      lastVBatLog = vBat;
+      lastLogTime = millis();
+    }
   }
   
   return true;
