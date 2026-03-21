@@ -1,5 +1,5 @@
 #include <TFT_eSPI.h>
-#include <ReefwingMSP.h>
+#include <esp_log.h>
 
 // --- P-51 VINTAGE PALETTE ---
 #define P51_CHARCOAL 0x18C3
@@ -12,29 +12,27 @@
 // Change 'Serial' to 'Serial0' here if the USB port is still silent
 #define console Serial0
 
-#define RX_FROM_FC 2  // Physical Pin 2
-#define TX_TO_FC 1    // Physical Pin 1
-
+#define RX_FROM_FC 18
+#define TX_TO_FC 17
+#define toAndFromFC Serial1
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
-HardwareSerial toAndFromFC(1);
 ReefwingMSP msp;
 
 // --- SHARED DATA ---
 float roll, pitch, alt, airSpeed, vsi, heading, vBat;
 bool isBenchMode = true;
 bool currentlyReceiving = false;
+bool check = false;
 unsigned long lastRequest = 0;
 unsigned long lastDataTime = 0;
 
 void setup() {
   console.begin(115200);
-
-  // Critical S3 delay to let the USB handshake finish
-  unsigned long startWait = millis();
-  while (!console && millis() - startWait < 3000) delay(10); 
-
-  console.println("\n--- P-51 COCKPIT: POWER ON ---");
+  while (!console);
+  delay(1000);
+  console.println("--- P-51 COCKPIT: RAW MSP MODE ---");
+ console.println("\n--- P-51 COCKPIT: POWER ON ---");
 
   // 1. TFT Initialization (Using your hardware pins 10-14 via User_Setup.h)
   tft.init();
@@ -42,57 +40,86 @@ void setup() {
   tft.fillScreen(TFT_BLACK);
   canvas.createSprite(80, 80); // Canvas sized for the 11.1mm gauge
   canvas.setTextDatum(MC_DATUM);
-
-  // 2. MSP / FC Initialization
+  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
-  msp.begin(toAndFromFC);
-    console.println("FC UART: Initialized on Pins 1/2");
-  // 3. FC Scan (5 second window to detect iNav)
+  
   unsigned long startScan = millis();
   while (millis() - startScan < 5000) {
-    msp.request(MSP_ATTITUDE, NULL, 0);
-    delay(100); // Give the FC time to process    
-    if (updateMSP()) { // Check if the "Promise" was returned
-      isBenchMode = false;
-      break;
+    // 1. CLEAR BUFFER
+    while(toAndFromFC.available()) toAndFromFC.read();
+
+    // 2. SEND RAW REQUEST (The Medium article's MSP_ATTITUDE packet)
+    // Header ($M<) + Size (0) + Type (108) + Checksum (108)
+    uint8_t mspAttitudeRequest[] = {0x24, 0x4D, 0x3C, 0x00, 0x6C, 0x6C};
+    toAndFromFC.write(mspAttitudeRequest, 6);
+
+    // 3. THE PATIENCE GAP: Give the FC 50ms to talk back
+    delay(50); 
+
+    // 4. MANUAL PARSE
+    if (toAndFromFC.available() >= 12) {
+      uint8_t data[12];
+      toAndFromFC.readBytes(data, 12);
+
+      // Verify header: $M> (0x24 0x4D 0x3E)
+      if (data[0] == '$' && data[1] == 'M' && data[2] == '>') {
+        // Data is at index 5, 6 (Roll), 7, 8 (Pitch)
+        // MSP is Little Endian: (High << 8) | Low
+        int16_t rRoll = (data[6] << 8) | data[5];
+        int16_t rPitch = (data[8] << 8) | data[7];
+        
+        roll = rRoll / 10.0;
+        pitch = rPitch / 10.0;
+
+        console.println("!!! FC CONNECTED !!!");
+        console.println("Roll: " + String(roll) + " Pitch: " + String(pitch));
+        isBenchMode = false;
+        break;
+      }
     }
+    console.println("Scanning... Buffer: " + String(toAndFromFC.available()));
+    delay(200);
   }
-  lastDataTime = millis(); // Reset this so loop doesn't immediately time out
   console.println("System Ready.");
 }
 
 bool updateMSP() {
-  uint8_t msp_id;
-  uint8_t payload[32];
-  uint8_t size;
-  console.println("--- gonna talk to MSP --- ");
+  static unsigned long lastReq = 0;
+  
+  // 1. RATE LIMIT: Don't spam the FC. Request data every 100ms (10Hz)
+  if (millis() - lastReq > 100) {
+    uint8_t attReq[] = {0x24, 0x4D, 0x3C, 0x00, 0x6C, 0x6C}; // $M< (ID 108)
+    toAndFromFC.write(attReq, 6);
+    lastReq = millis();
+  }
 
-  // 1. Check if the library sees a valid packet
-  if (msp.recv(&msp_id, payload, sizeof(payload), &size)) {
-    lastDataTime = millis();
-    currentlyReceiving = true;
-
-    console.print("--- MSP RECEIVED: ID ");
-    console.print(msp_id);
-    console.print(" | Size: ");
-    console.println(size);
-
-    switch (msp_id) {
-      case MSP_ATTITUDE:
-        roll = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
-        pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
-        heading = (int16_t)(payload[4] | (payload[5] << 8));
-        break;
-      case MSP_ALTITUDE:
-        alt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)) * 0.0328084;
-        vsi = ((int16_t)(payload[4] | (payload[5] << 8)) * 1.9685) / 1000.0;
-        break;
-      case MSP_ANALOG:
-        vBat = payload[0] / 10.0;
-        console.print("VBAT: "); console.println(vBat);
-        break;
+  // 2. CHECK THE BUFFER: We need at least 12 bytes for a full Attitude packet
+  if (toAndFromFC.available() >= 12) {
+    uint8_t buf[12];
+    
+    // Look for the Header ($M>)
+    if (toAndFromFC.peek() != '$') {
+      toAndFromFC.read(); // Trash the byte if it's not the start of a packet
+      return false; 
     }
-    return true;
+
+    toAndFromFC.readBytes(buf, 12);
+
+    // Verify it's actually the response for ID 108
+    if (buf[0] == '$' && buf[1] == 'M' && buf[2] == '>' && buf[4] == 108) {
+      // SUCCESS! Extract the data (Little Endian)
+      // buf[5/6] = Roll, buf[7/8] = Pitch, buf[9/10] = Heading
+      int16_t rRoll  = (buf[6] << 8) | buf[5];
+      int16_t rPitch = (buf[8] << 8) | buf[7];
+      int16_t rHead  = (buf[10] << 8) | buf[9];
+
+      roll    = rRoll / 10.0;
+      pitch   = rPitch / 10.0;
+      heading = rHead;
+      
+      lastDataTime = millis();
+      return true;
+    }
   }
   return false;
 }
@@ -448,7 +475,6 @@ void loop() {
     if (millis() - lastRequest > 25) {
       static int step = 0;
       uint8_t cycle[] = {MSP_ATTITUDE, MSP_ALTITUDE, MSP_ANALOG};
-      msp.request(cycle[step], NULL, 0);
       step = (step + 1) % 3;
       lastRequest = millis();
     }

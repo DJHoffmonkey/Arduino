@@ -75,68 +75,68 @@ void sendMSPRequest(uint8_t cmd) {
   toAndFromFC.write(req, 6); 
 }
 
-void readMSPResponse() {
-  while (toAndFromFC.available() >= 6) { 
-    if (toAndFromFC.peek() != '$') { 
-      toAndFromFC.read(); 
-      continue; 
-    }
-
-    if (toAndFromFC.read() == '$' && toAndFromFC.read() == 'M' && toAndFromFC.read() == '>') {
-      uint8_t size = toAndFromFC.read(); 
-      uint8_t cmd = toAndFromFC.read();
-      sessionHasMSP = true; 
-      lastDataTime = millis();
-
-      // --- THE CORE FIX: CAPTURE ENTIRE PAYLOAD FIRST ---
-      uint8_t p [size]; 
-      for (int i = 0; i < size; i++) {
-        unsigned long startWait = millis();
-        while (toAndFromFC.available() == 0 && millis() - startWait < 15); 
-        p [i] = toAndFromFC.read();
+  void readMSPResponse() {
+    while (toAndFromFC.available() >= 6) { 
+      if (toAndFromFC.peek() != '$') { 
+        toAndFromFC.read(); 
+        continue; 
       }
-      
-      // Consume the 1-byte checksum that always follows the payload
-      while (toAndFromFC.available() == 0); 
-      toAndFromFC.read(); 
 
-      // --- NOW EXTRACT DATA FROM THE CAPTURED BYTES ---
-      if (cmd == 108 && size >= 6) { // ATTITUDE
-        int16_t angX = p [0] | (p [1] << 8); 
-        int16_t angY = p [2] | (p [3] << 8); 
-        int16_t head = p [4] | (p [5] << 8); 
-        roll = angX / 10.0; 
-        pitch = angY / 10.0; 
-        heading = (float)head;
-      } 
-      else if (cmd == 109 && size >= 4) { // ALTITUDE
-        // for(int i=0; i<4; i++) {
-        //   console.print(p [i]); console.print(" ");
-        // }
-        int32_t altCm = (int32_t)p [0] | ((int32_t)p [1] << 8) | ((int32_t)p [2] << 16) | ((int32_t)p [3] << 24);
-        altitude = (float)altCm * 0.0328084; 
-        baro = 29.92;
-        // Speed is in cm/s, converting to MPH
-        int16_t speedCmS = p [4] | (p [5] << 8);
-        airSpeed = (float)speedCmS * 0.0223694;
-      }
-      else if (cmd == 102 && size >= 6) { // RAW IMU
-        int16_t az = p [4] | (p [5] << 8); 
-        currentG = (((float)az / ACCEL_1G) * 0.1) + (currentG * 0.9);
-      } 
-      else if (cmd == 110 && size >= 1) { // VOLTS
-        vBat = ((p [0] / 10.0) * 0.2) + (vBat * 0.8);
-      } 
-      else if (cmd == 105) { // RC CHANNELS
-        int armIdx = (ARM_RC_CHANNEL - 1) * 2; // Channel 13 = Index 24
-        // Only process if the packet is actually long enough to contain our channel
-        if (size >= (armIdx + 2)) {
-          armSwitchValue = p [armIdx] | (p [armIdx + 1] << 8);
+      if (toAndFromFC.read() == '$' && toAndFromFC.read() == 'M' && toAndFromFC.read() == '>') {
+        uint8_t size = toAndFromFC.read(); 
+        uint8_t cmd = toAndFromFC.read();
+        sessionHasMSP = true; 
+        lastDataTime = millis();
+
+        // --- THE CORE FIX: CAPTURE ENTIRE PAYLOAD FIRST ---
+        uint8_t p [size]; 
+        for (int i = 0; i < size; i++) {
+          unsigned long startWait = millis();
+          while (toAndFromFC.available() == 0 && millis() - startWait < 15); 
+          p [i] = toAndFromFC.read();
         }
-      } 
+        
+        // Consume the 1-byte checksum that always follows the payload
+        while (toAndFromFC.available() == 0); 
+        toAndFromFC.read(); 
+
+        // --- NOW EXTRACT DATA FROM THE CAPTURED BYTES ---
+        if (cmd == 108 && size >= 6) { // ATTITUDE
+          int16_t angX = p [0] | (p [1] << 8); 
+          int16_t angY = p [2] | (p [3] << 8); 
+          int16_t head = p [4] | (p [5] << 8); 
+          roll = angX / 10.0; 
+          pitch = angY / 10.0; 
+          heading = (float)head;
+        } 
+        else if (cmd == 109 && size >= 4) { // ALTITUDE
+          // for(int i=0; i<4; i++) {
+          //   console.print(p [i]); console.print(" ");
+          // }
+          int32_t altCm = (int32_t)p [0] | ((int32_t)p [1] << 8) | ((int32_t)p [2] << 16) | ((int32_t)p [3] << 24);
+          altitude = (float)altCm * 0.0328084; 
+          baro = 29.92;
+          // Speed is in cm/s, converting to MPH
+          int16_t speedCmS = p [4] | (p [5] << 8);
+          airSpeed = (float)speedCmS * 0.0223694;
+        }
+        else if (cmd == 102 && size >= 6) { // RAW IMU
+          int16_t az = p [4] | (p [5] << 8); 
+          currentG = (((float)az / ACCEL_1G) * 0.1) + (currentG * 0.9);
+        } 
+        else if (cmd == 110 && size >= 1) { // VOLTS
+          vBat = ((p [0] / 10.0) * 0.2) + (vBat * 0.8);
+        } 
+        else if (cmd == 105) { // RC CHANNELS
+          int armIdx = (ARM_RC_CHANNEL - 1) * 2; // Channel 13 = Index 24
+          // Only process if the packet is actually long enough to contain our channel
+          if (size >= (armIdx + 2)) {
+            armSwitchValue = p [armIdx] | (p [armIdx + 1] << 8);
+          }
+        } 
+      }
     }
   }
-}
 void setup() {
   // Disable internal system logging to prevent UART chatter
   esp_log_level_set("*", ESP_LOG_NONE);
