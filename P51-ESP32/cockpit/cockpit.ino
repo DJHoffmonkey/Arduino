@@ -6,6 +6,9 @@
 #define P51_DIRTY_W  0xDEDB
 #define P51_SKY      0x641D 
 #define P51_EARTH    0x4221 
+// --- GLOBALS FOR 16-CHANNEL SUPPORT ---
+#define MSP_RC 105
+#define MSP_AIRSPEED 118
 
 // --- HARDWARE CONFIG ---
 #define console Serial0      
@@ -17,9 +20,10 @@ TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 
 // --- SHARED DATA ---
-bool isBenchMode = true;
+bool isBenchMode = true, gearDown = true, flapsDown = false;
 float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0, lastAltLog = -999.0, lastVBatLog = -999.0;
 unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
+uint16_t rcChannels[14]; // To safely cover your 14 channels
 
 // --- MSP COMMAND IDS ---
 #define MSP_ATTITUDE 108
@@ -61,71 +65,75 @@ void sendMSPRequest(uint8_t cmd) {
 }
 
 bool parseMSP() {
-  // We need at least the header (3), size (1), cmd (1), and crc (1) = 6 bytes
   if (toAndFromFC.available() < 6) return false;
+  if (toAndFromFC.peek() != '$') { toAndFromFC.read(); return false; }
 
-  // Sync to header
-  if (toAndFromFC.peek() != '$') {
-    toAndFromFC.read(); 
-    return false;
-  }
-
-  // Read header
   uint8_t head[3];
   toAndFromFC.readBytes(head, 3);
   if (head[1] != 'M' || head[2] != '>') return false;
 
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
-  uint8_t payload[size];
+  
+  // CRITICAL: Buffer must be large enough for 14+ channels (28+ bytes)
+  uint8_t payload[64]; 
   toAndFromFC.readBytes(payload, size);
   uint8_t crc = toAndFromFC.read(); 
 
   lastDataTime = millis();
-  isBenchMode = false; // Once tripped, loop() will stop doing sine waves
+  isBenchMode = false;
 
-  if (cmd == MSP_ATTITUDE && size >= 6) {
+  // --- RC DATA (GEAR, FLAPS, ARMING) ---
+  if (cmd == MSP_RC) {
+    int numChannels = size / 2; // Each channel is 2 bytes
+    for (int i = 0; i < numChannels && i < 16; i++) {
+      rcChannels[i] = (uint16_t)(payload[i*2] | (payload[i*2+1] << 8));
+    }
+
+    // MAPPING (iNAV Indexing: CH1 is 0, CH5 is 4, etc.)
+    // Check your iNAV Receiver tab to confirm these:
+    // Usually: CH5=AUX1, CH6=AUX2... CH14=AUX10
+    
+    bool newGear  = (rcChannels[5] > 1500);  // Testing CH6 (AUX 2)
+    bool newFlaps = (rcChannels[6] > 1500);  // Testing CH7 (AUX 3)
+    bool isArmed  = (rcChannels[13] > 1500); // Testing CH14 (AUX 10)
+
+    if(newGear != gearDown) {
+      gearDown = newGear;
+      console.printf("EVENT -> GEAR: %s\n", gearDown ? "DOWN" : "UP");
+    }
+    if(newFlaps != flapsDown) {
+      flapsDown = newFlaps;
+      console.printf("EVENT -> FLAPS: %s\n", flapsDown ? "DOWN" : "UP");
+    }
+  }
+
+  // --- ATTITUDE ---
+  else if (cmd == MSP_ATTITUDE && size >= 6) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
     pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
     heading = (int16_t)(payload[4] | (payload[5] << 8));
   } 
-  else if (cmd == MSP_ALTITUDE) {
-    // iNAV MSP V2 10-Byte Layout:
-    // [0-3]  int32: Estimated Altitude (Relative to Home) -> Blue Line
-    // [4-5]  int16: Vertical Speed (cm/s)
-    // [6-9]  int32: Barometer Altitude (Relative to Power-up) -> Green Line
-    
-    int32_t estAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    int16_t rawVsi = (int16_t)(payload[4] | (payload[5] << 8));
+
+  // --- ALTITUDE (V2 10-BYTE) ---
+  else if (cmd == MSP_ALTITUDE && size >= 10) {
+    int32_t estAlt  = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+    vsi             = (int16_t)(payload[4] | (payload[5] << 8));
     int32_t baroAlt = (int32_t)(payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24));
-
-    // Logic: If 'estAlt' is zero (waiting for arm), use 'baroAlt' so the gauges move!
-    if (estAlt == 0) {
-      alt = baroAlt / 30.48; // Convert raw cm to feet
-    } else {
-      alt = estAlt / 30.48;
-    }
-    
-    vsi = rawVsi; 
-
-    // --- PRECISION CONSOLE LOG ---
-    static float lastAltLog = -999;
-    if (abs(alt - lastAltLog) > 0.01) {
-       console.printf("V2 ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
-       lastAltLog = alt;
-    }
+    alt = (estAlt == 0) ? (baroAlt / 30.48) : (estAlt / 30.48);
   }
-  else if (cmd == MSP_ANALOG && size >= 7) {
+
+  // --- BATTERY ---
+  else if (cmd == MSP_ANALOG && size >= 1) {
     vBat = payload[0] / 10.0;
-    
-    if (millis() - lastLogTime > 100) {
-      if (abs(vBat - lastVBatLog) > 0.0) {
-        console.printf("LIVE BATTERY: %.2f V\n", vBat);
-        lastVBatLog = vBat;
-        lastLogTime = millis();
-      }
-    }
   }
+
+  // --- AIRSPEED ---
+  else if (cmd == MSP_AIRSPEED && size >= 2) {
+    int16_t rawSpeed = (int16_t)(payload[0] | (payload[1] << 8)); 
+    airSpeed = rawSpeed * 0.02237; 
+  }
+
   return true;
 }
 
