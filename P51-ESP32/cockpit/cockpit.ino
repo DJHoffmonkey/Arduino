@@ -89,19 +89,30 @@ bool parseMSP() {
     pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
     heading = (int16_t)(payload[4] | (payload[5] << 8));
   } 
-  else if (cmd == MSP_ALTITUDE && size >= 6) {
-    int32_t rawAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    alt = rawAlt / 30.48; 
-    vsi = (int16_t)(payload[4] | (payload[5] << 8));
+  else if (cmd == MSP_ALTITUDE) {
+    // iNAV MSP V2 10-Byte Layout:
+    // [0-3]  int32: Estimated Altitude (Relative to Home) -> Blue Line
+    // [4-5]  int16: Vertical Speed (cm/s)
+    // [6-9]  int32: Barometer Altitude (Relative to Power-up) -> Green Line
+    
+    int32_t estAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+    int16_t rawVsi = (int16_t)(payload[4] | (payload[5] << 8));
+    int32_t baroAlt = (int32_t)(payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24));
 
-    // --- HIGH PRECISION CONSOLE LOGGING ---
-    // Only log if altitude changes by 0.01ft AND 100ms has passed
-    if (millis() - lastLogTime > 100) {
-      if (abs(alt - lastAltLog) > 0.01) {
-        console.printf("PRECISION ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
-        lastAltLog = alt;
-        lastLogTime = millis();
-      }
+    // Logic: If 'estAlt' is zero (waiting for arm), use 'baroAlt' so the gauges move!
+    if (estAlt == 0) {
+      alt = baroAlt / 30.48; // Convert raw cm to feet
+    } else {
+      alt = estAlt / 30.48;
+    }
+    
+    vsi = rawVsi; 
+
+    // --- PRECISION CONSOLE LOG ---
+    static float lastAltLog = -999;
+    if (abs(alt - lastAltLog) > 0.01) {
+       console.printf("V2 ALT: %.2f ft | VSI: %d cm/s\n", alt, (int)vsi);
+       lastAltLog = alt;
     }
   }
   else if (cmd == MSP_ANALOG && size >= 7) {
