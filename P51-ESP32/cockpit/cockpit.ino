@@ -15,14 +15,20 @@
 #define toAndFromFC Serial1  
 #define RX_FROM_FC 18
 #define TX_TO_FC 17
+#define CH_FLAPS 7
+#define CH_GEAR 5
+#define CH_ARM 14
+
+#define isDebug true
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 
 // --- SHARED DATA ---
-bool isBenchMode = true, gearDown = true, flapsDown = false;
+bool isBenchMode = true, gearDown = true, isArmed = false;
 float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0, lastAltLog = -999.0, lastVBatLog = -999.0;
 unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
+uint8_t flapPos = 0; // 0=Clean, 1=Takeoff, 2=Landing
 uint16_t rcChannels[14]; // To safely cover your 14 channels
 
 // --- MSP COMMAND IDS ---
@@ -75,6 +81,7 @@ bool parseMSP() {
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
   
+  // CRITICAL: Buffer must be large enough for 14+ channels (28+ bytes)
   uint8_t payload[64]; 
   toAndFromFC.readBytes(payload, size);
   uint8_t crc = toAndFromFC.read(); 
@@ -83,24 +90,49 @@ bool parseMSP() {
   isBenchMode = false;
 
   // --- RC DATA (GEAR, FLAPS, ARMING) ---
-  if (cmd == MSP_RC) {
-    int numChannels = size / 2;
-    for (int i = 0; i < numChannels && i < 16; i++) {
-      rcChannels[i] = (uint16_t)(payload[i*2] | (payload[i*2+1] << 8));
+  if (cmd == 105) { // MSP_RC
+    // 1. ARMING (Channel 14)
+    int armIdx = (CH_ARM - 1) * 2; // Byte Index 26
+    if (size >= (armIdx + 2)) {
+      uint16_t aRaw = payload[armIdx] | (payload[armIdx + 1] << 8);
+      bool newArmedState = (aRaw > 1500); 
+      
+      // Debug output only on state change
+      if (isDebug && (newArmedState != isArmed)) {
+        console.printf("DEBUG -> SYSTEM: %s (Raw PWM: %d)\n", 
+                      newArmedState ? "!!! ARMED !!!" : "DISARMED", aRaw);
+      }
+      isArmed = newArmedState;
+    }
+    // 2. GEAR (Channel 6)
+    int gearIdx = (CH_GEAR - 1) * 2;
+    if (size >= (gearIdx + 2)) {
+      uint16_t newGearVal = payload[gearIdx] | (payload[gearIdx + 1] << 8);
+      bool newGearDown = (newGearVal > 1500); // Usually <1500 is "Down" for gear
+      if (isDebug && (newGearDown != gearDown)) {
+        console.printf("DEBUG -> GEAR: %s (%d)\n", newGearDown ? "DOWN" : "UP", newGearVal);
+      }
+      gearDown = newGearDown;
     }
 
-    // Mapping: CH6=AUX2 (idx 5), CH7=AUX3 (idx 6), CH14=AUX10 (idx 13)
-    bool newGear  = (rcChannels[5] > 1500);  
-    bool newFlaps = (rcChannels[6] > 1500);  
+    // 3. FLAPS (Channel 7 - 3 Position)
+    int flapIdx = (CH_FLAPS - 1) * 2;
+    if (size >= (flapIdx + 2)) {
+      uint16_t fRaw = payload[flapIdx] | (payload[flapIdx + 1] << 8);
+      uint8_t newFlapPos;
+      
+      if (fRaw < 1300)      newFlapPos = 0; // CLEAN
+      else if (fRaw < 1700) newFlapPos = 1; // TAKEOFF
+      else                  newFlapPos = 2; // LANDING
 
-    if(isDebug) {
-      if(newGear != gearDown) console.printf("DEBUG -> GEAR: %s (Raw: %d)\n", newGear ? "DOWN" : "UP", rcChannels[5]);
-      if(newFlaps != flapsDown) console.printf("DEBUG -> FLAPS: %s (Raw: %d)\n", newFlaps ? "DOWN" : "UP", rcChannels[6]);
+      if (isDebug && (newFlapPos != flapPos)) {
+        const char* states[] = {"CLEAN", "TAKEOFF", "LANDING"};
+        console.printf("DEBUG -> FLAPS: %s (Raw PWM: %d)\n", states[newFlapPos], fRaw);
+      }
+      flapPos = newFlapPos;    
     }
-    gearDown = newGear;
-    flapsDown = newFlaps;
+    
   }
-
   // --- ATTITUDE ---
   else if (cmd == MSP_ATTITUDE && size >= 6) {
     roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
@@ -145,15 +177,23 @@ bool parseMSP() {
 
 void updateMSP() {
   static int cycle = 0;
-  // Request rate: 50ms (20Hz)
-  if (millis() - lastRequestTime > 50) {
-    cycle = (cycle + 1) % 3;
-    if (cycle == 0)      sendMSPRequest(MSP_ATTITUDE);
-    else if (cycle == 1) sendMSPRequest(MSP_ALTITUDE);
-    else                 sendMSPRequest(MSP_ANALOG);
+  
+  // 1. SEND REQUESTS (Every 40ms to keep it snappy)
+  if (millis() - lastRequestTime > 40) {
+    cycle = (cycle + 1) % 5; // Updated to 5 to cover all cases
+    
+    switch(cycle) {
+      case 0: sendMSPRequest(MSP_ATTITUDE); break;
+      case 1: sendMSPRequest(MSP_ALTITUDE); break;
+      case 2: sendMSPRequest(MSP_ANALOG); break;
+      case 3: sendMSPRequest(105); break; // MSP_RC
+      case 4: sendMSPRequest(118); break; // MSP_AIRSPEED
+    }
     lastRequestTime = millis();
   }
 
+  // 2. PROCESS INCOMING DATA (The "Missing" Engine)
+  // This loop drains the Serial buffer as long as there's a header (6 bytes min)
   while (toAndFromFC.available() >= 6) {
     parseMSP();
   }
