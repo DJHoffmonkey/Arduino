@@ -75,7 +75,6 @@ bool parseMSP() {
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
   
-  // CRITICAL: Buffer must be large enough for 14+ channels (28+ bytes)
   uint8_t payload[64]; 
   toAndFromFC.readBytes(payload, size);
   uint8_t crc = toAndFromFC.read(); 
@@ -85,27 +84,21 @@ bool parseMSP() {
 
   // --- RC DATA (GEAR, FLAPS, ARMING) ---
   if (cmd == MSP_RC) {
-    int numChannels = size / 2; // Each channel is 2 bytes
+    int numChannels = size / 2;
     for (int i = 0; i < numChannels && i < 16; i++) {
       rcChannels[i] = (uint16_t)(payload[i*2] | (payload[i*2+1] << 8));
     }
 
-    // MAPPING (iNAV Indexing: CH1 is 0, CH5 is 4, etc.)
-    // Check your iNAV Receiver tab to confirm these:
-    // Usually: CH5=AUX1, CH6=AUX2... CH14=AUX10
-    
-    bool newGear  = (rcChannels[5] > 1500);  // Testing CH6 (AUX 2)
-    bool newFlaps = (rcChannels[6] > 1500);  // Testing CH7 (AUX 3)
-    bool isArmed  = (rcChannels[13] > 1500); // Testing CH14 (AUX 10)
+    // Mapping: CH6=AUX2 (idx 5), CH7=AUX3 (idx 6), CH14=AUX10 (idx 13)
+    bool newGear  = (rcChannels[5] > 1500);  
+    bool newFlaps = (rcChannels[6] > 1500);  
 
-    if(newGear != gearDown) {
-      gearDown = newGear;
-      console.printf("EVENT -> GEAR: %s\n", gearDown ? "DOWN" : "UP");
+    if(isDebug) {
+      if(newGear != gearDown) console.printf("DEBUG -> GEAR: %s (Raw: %d)\n", newGear ? "DOWN" : "UP", rcChannels[5]);
+      if(newFlaps != flapsDown) console.printf("DEBUG -> FLAPS: %s (Raw: %d)\n", newFlaps ? "DOWN" : "UP", rcChannels[6]);
     }
-    if(newFlaps != flapsDown) {
-      flapsDown = newFlaps;
-      console.printf("EVENT -> FLAPS: %s\n", flapsDown ? "DOWN" : "UP");
-    }
+    gearDown = newGear;
+    flapsDown = newFlaps;
   }
 
   // --- ATTITUDE ---
@@ -121,17 +114,30 @@ bool parseMSP() {
     vsi             = (int16_t)(payload[4] | (payload[5] << 8));
     int32_t baroAlt = (int32_t)(payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24));
     alt = (estAlt == 0) ? (baroAlt / 30.48) : (estAlt / 30.48);
+
+    if (isDebug && abs(alt - lastAltLog) > 0.1) { // 0.1ft threshold
+       console.printf("DEBUG -> ALT: %.2f ft | VSI: %d\n", alt, (int)vsi);
+       lastAltLog = alt;
+    }
   }
 
   // --- BATTERY ---
   else if (cmd == MSP_ANALOG && size >= 1) {
     vBat = payload[0] / 10.0;
+    if (isDebug && abs(vBat - lastVBatLog) > 0.05) {
+       console.printf("DEBUG -> BATTERY: %.2fV\n", vBat);
+       lastVBatLog = vBat;
+    }
   }
 
   // --- AIRSPEED ---
   else if (cmd == MSP_AIRSPEED && size >= 2) {
+    float prevSpeed = airSpeed;
     int16_t rawSpeed = (int16_t)(payload[0] | (payload[1] << 8)); 
     airSpeed = rawSpeed * 0.02237; 
+    if (isDebug && abs(airSpeed - prevSpeed) > 0.5) {
+       console.printf("DEBUG -> AIRSPEED: %.1f MPH\n", airSpeed);
+    }
   }
 
   return true;
