@@ -8,6 +8,7 @@
 #define P51_EARTH    0x4221 
 // --- GLOBALS FOR 16-CHANNEL SUPPORT ---
 #define MSP_RC 105
+#define MSP_RAW_GPS 106
 #define MSP_AIRSPEED 118
 
 // --- HARDWARE CONFIG ---
@@ -30,6 +31,11 @@ float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0
 unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
 uint8_t flapPos = 0; // 0=Clean, 1=Takeoff, 2=Landing
 uint16_t rcChannels[14]; // To safely cover your 14 channels
+
+// --- HOME TRACKING ---
+int32_t homeLat = 0, homeLon = 0;
+bool homeLocked = false; // This stays true until reboot
+uint16_t distToHome = 0, dirToHome = 0;   // Absolute bearing to home
 
 // --- MSP COMMAND IDS ---
 #define MSP_ATTITUDE 108
@@ -161,16 +167,35 @@ bool parseMSP() {
        lastVBatLog = vBat;
     }
   }
-
-  // --- AIRSPEED ---
-  else if (cmd == MSP_AIRSPEED && size >= 2) {
-    float prevSpeed = airSpeed;
-    int16_t rawSpeed = (int16_t)(payload[0] | (payload[1] << 8)); 
-    airSpeed = rawSpeed * 0.02237; 
-    if (isDebug && abs(airSpeed - prevSpeed) > 0.5) {
-       console.printf("DEBUG -> AIRSPEED: %.1f MPH\n", airSpeed);
+  else if (cmd == MSP_RAW_GPS) { // MSP_RAW_GPS (V2)
+    // iNAV MSP V2 GPS Payload is typically 18+ bytes
+    if (size >= 16) {
+        uint8_t fixType = payload[0];      // 0 = No Fix, 3 = 3D Fix
+        uint8_t numSats = payload[1];      // Satellite count
+        
+        // Ground Speed is at Byte 14-15 (uint16_t in cm/s)
+        uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
+        
+        float newSpeedMPH = groundSpeedCMS * 0.0223694; // cm/s to MPH
+        
+        if (isDebug && (abs(newSpeedMPH - airSpeed) > 0.2)) {
+            console.printf("DEBUG -> GPS SPEED: %.1f MPH | Sats: %d | Fix: %d\n", 
+                           newSpeedMPH, numSats, fixType);
+        }
+        
+        // Update the global variable that drives your Gauge
+        airSpeed = newSpeedMPH;
     }
   }
+  // --- AIRSPEED ---
+  // else if (cmd == MSP_AIRSPEED && size >= 2) {
+  //   float prevSpeed = airSpeed;
+  //   int16_t rawSpeed = (int16_t)(payload[0] | (payload[1] << 8)); 
+  //   airSpeed = rawSpeed * 0.02237; 
+  //   if (isDebug && abs(airSpeed - prevSpeed) > 0.5) {
+  //      console.printf("DEBUG -> AIRSPEED: %.1f MPH\n", airSpeed);
+  //   }
+  // }
 
   return true;
 }
@@ -179,15 +204,15 @@ void updateMSP() {
   static int cycle = 0;
   
   // 1. SEND REQUESTS (Every 40ms to keep it snappy)
-  if (millis() - lastRequestTime > 40) {
-    cycle = (cycle + 1) % 5; // Updated to 5 to cover all cases
+  if (millis() - lastRequestTime > 10) {
+    cycle = (cycle + 1) % 8; // Updated to 5 to cover all cases
     
     switch(cycle) {
-      case 0: sendMSPRequest(MSP_ATTITUDE); break;
+      case 0: case 2: case 4: case 6: sendMSPRequest(MSP_ATTITUDE); break;
       case 1: sendMSPRequest(MSP_ALTITUDE); break;
-      case 2: sendMSPRequest(MSP_ANALOG); break;
-      case 3: sendMSPRequest(105); break; // MSP_RC
-      case 4: sendMSPRequest(118); break; // MSP_AIRSPEED
+      case 3: sendMSPRequest(MSP_ANALOG); break;
+      case 5: sendMSPRequest(MSP_RC); break; 
+      case 7: sendMSPRequest(MSP_RAW_GPS); break;
     }
     lastRequestTime = millis();
   }
