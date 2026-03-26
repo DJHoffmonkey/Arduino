@@ -49,6 +49,8 @@ int16_t  dirToHome = 0; // Absolute bearing from FC to Home
 bool lastGearDown = false, gearInTransit = false;
 uint32_t gearTimer = 0;
 const uint32_t GEAR_CYCLE_TIME = 5000;
+uint32_t missionStartTime = 0;
+uint32_t finalFlightTime = 0; // To "freeze" the hands on landing
 
 void setup() {
   console.begin(115200);
@@ -726,9 +728,7 @@ void oledTaskCode(void * pvParameters) {
 
     u8g2.setFont(u8g2_font_4x6_tr);
 
-    // =============================================================
     // --- 1. REMOTE COMPASS (LEFT) ---
-    // =============================================================
     u8g2.drawStr(xL-2, hY-rL+7, "N"); 
     u8g2.drawStr(xL-2, hY+rL-2, "S"); 
     u8g2.drawStr(xL+rL-7, hY+2, "E"); 
@@ -740,7 +740,7 @@ void oledTaskCode(void * pvParameters) {
       u8g2.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-3)*cos(tR)), (int)(hY+(rL-3)*sin(tR)));
     }
 
-    // --- STABLE HEADING NEEDLE ---
+    // --- HEADING NEEDLE ---
     float radH = (sharedHeading - 90.0) * (PI / 180.0);
     float cH = cos(radH); float sH = sin(radH);
     float cO = cos(radH + 1.5708); float sO = sin(radH + 1.5708);
@@ -749,8 +749,6 @@ void oledTaskCode(void * pvParameters) {
     // Tip Bars (Flat Cap)
     int tx1 = (int)(xL + (rL-2)*cH + w*cO); int ty1 = (int)(hY + (rL-2)*sH + w*sO);
     int tx2 = (int)(xL + (rL-2)*cH - w*cO); int ty2 = (int)(hY + (rL-2)*sH - w*sO);
-    
-    // Hub Anchors
     int bx1 = (int)(xL + 2*cH + w*cO); int by1 = (int)(hY + 2*sH + w*sO);
     int bx2 = (int)(xL + 2*cH - w*cO); int by2 = (int)(hY + 2*sH - w*sO);
 
@@ -763,8 +761,7 @@ void oledTaskCode(void * pvParameters) {
 
     // --- HOME "BUG" (Perpendicular T-Bar) ---
     float radC = (dirToHome - 90.0) * (PI / 180.0);
-    int bugX = (int)(xL + (rL-3)*cos(radC)); 
-    int bugY = (int)(hY + (rL-3)*sin(radC));
+    int bugX = (int)(xL + (rL-3)*cos(radC)); int bugY = (int)(hY + (rL-3)*sin(radC));
     float cOC = cos(radC + 1.5708); float sOC = sin(radC + 1.5708);
     u8g2.drawLine((int)(bugX + 5*cOC), (int)(bugY + 5*sOC), (int)(bugX - 5*cOC), (int)(bugY - 5*sOC));
 
@@ -776,9 +773,19 @@ void oledTaskCode(void * pvParameters) {
     u8g2.drawStr(xR+rR-6, hY+2, "3");
     u8g2.drawStr(xR-rR+1, hY+2, "9");
 
-    uint32_t ts = millis() / 1000;
-    float mR = (((ts / 60) % 60) * 6 - 90) * (PI/180.0);
-    float sR = ((ts % 60) * 6 - 90) * (PI/180.0);
+    uint32_t activeSecs = 0;
+
+    if (isArmed) { 
+        if (missionStartTime == 0) missionStartTime = millis(); // First time arming
+        activeSecs = (millis() - missionStartTime) / 1000;
+        finalFlightTime = activeSecs; // Keep updating "last known" time
+    } else {
+        // If we haven't flown yet, it's 0. If we just landed, show final time.
+        activeSecs = finalFlightTime; 
+    }
+
+    float mR = (((activeSecs / 60) % 60) * 6 - 90) * (PI/180.0);
+    float sR = ((activeSecs % 60) * 6 - 90) * (PI/180.0);
 
     u8g2.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mR)), (int)(hY + (rR-6)*sin(mR))); // Min
     u8g2.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sR)), (int)(hY + (rR-1)*sin(sR))); // Sec
