@@ -718,68 +718,73 @@ void loop() {
 void oledTaskCode(void * pvParameters) {
   for(;;) {
     u8g2.clearBuffer();
-    const int hY = 32; // Vertical Center
-
-    // =============================================================
-    // --- 1. REMOTE COMPASS (LEFT - 9mm Stencil) ---
-    // =============================================================
+    const int hY = 32; 
     const int xL = 22;
-    const int rL = 24; // Increased radius (No border to hit)
+    const int rL = 24; // Stretched for 9mm
+    const int xR = 80;
+    const int rR = 19; // Stretched for 7mm
 
-    // Cardinal Labels (Tucked inside the 9mm circle)
+    // =============================================================
+    // --- 1. REMOTE COMPASS (LEFT) ---
+    // =============================================================
     u8g2.setFont(u8g2_font_4x6_tr);
     u8g2.drawStr(xL-2, hY-rL+7, "N");
     u8g2.drawStr(xL-2, hY+rL-2, "S");
     u8g2.drawStr(xL+rL-7, hY+2, "E");
     u8g2.drawStr(xL-rL+2, hY+2, "W");
 
-    // --- THE "FRAME" NEEDLE ---
-    float rad = (sharedHeading - 90.0) * (PI / 180.0);
-    float cosR = cos(rad);
-    float sinR = sin(rad);
-    float cosO = cos(rad + PI/2); // 90 deg offset for width
-    float sinO = sin(rad + PI/2);
-    
-    float w = 1.8; // Width of the frame
+    // Ticks every 30 degrees
+    for (int a = 0; a < 360; a += 30) {
+      float tR = (a - 90) * (PI/180);
+      u8g2.drawLine(xL+(rL-1)*cos(tR), hY+(rL-1)*sin(tR), xL+(rL-4)*cos(tR), hY+(rL-4)*sin(tR));
+    }
 
-    // Draw the two parallel "Rails"
-    // Side A
-    u8g2.drawLine(xL + w*cosO, hY + w*sinO, xL + (rL-2)*cosR + w*cosO, hY + (rL-2)*sinR + w*sinO);
-    u8g2.drawLine(xL + w*cosO, hY + w*sinO, xL - (rL-10)*cosR + w*cosO, hY - (rL-10)*sinR + w*sinO);
-    // Side B
-    u8g2.drawLine(xL - w*cosO, hY - w*sinO, xL + (rL-2)*cosR - w*cosO, hY + (rL-2)*sinR - w*sinO);
-    u8g2.drawLine(xL - w*cosO, hY - w*sinO, xL - (rL-10)*cosR - w*cosO, hY - (rL-10)*sinR - w*sinO);
+    // --- HEADING NEEDLE (Double-Bar Frame) ---
+    float radH = (sharedHeading - 90.0) * (PI / 180.0);
+    float cosH = cos(radH); float sinH = sin(radH);
+    float cosOH = cos(radH + PI/2); float sinOH = sin(radH + PI/2);
+    float wH = 1.8; // Gap width
 
-    // Tip Cross-Bar (Creates the "Arrow" closure)
-    u8g2.drawLine(xL + (rL-2)*cosR + w*cosO, hY + (rL-2)*sinR + w*sinO,
-                  xL + (rL-2)*cosR - w*cosO, hY + (rL-2)*sinR - w*sinO);
-                  
-    // Tail Cross-Bar
-    u8g2.drawLine(xL - (rL-10)*cosR + w*cosO, hY - (rL-10)*sinR + w*sinO,
-                  xL - (rL-10)*cosR - w*cosO, hY - (rL-10)*sinR - w*sinO);
+    // Parallel Rails
+    u8g2.drawLine(xL + wH*cosOH, hY + wH*sinOH, xL + (rL-2)*cosH + wH*cosOH, hY + (rL-2)*sinH + wH*sinOH);
+    u8g2.drawLine(xL - wH*cosOH, hY - wH*sinOH, xL + (rL-2)*cosH - wH*cosOH, hY + (rL-2)*sinH - wH*sinOH);
+    // Tip Closure
+    u8g2.drawLine(xL + (rL-2)*cosH + wH*cosOH, hY + (rL-2)*sinH + wH*sinOH, xL + (rL-2)*cosH - wH*cosOH, hY + (rL-2)*sinH - wH*sinOH);
+    // Counter-Tail
+    u8g2.drawLine(xL, hY, xL - (rL-10)*cosH, hY - (rL-10)*sinH);
+
+    // --- COURSE INDICATOR (Perpendicular T-Bar) ---
+    // This is the "other needle" in your photo. 
+    float radC = (dirToHome - 90.0) * (PI / 180.0);
+    float cosC = cos(radC); float sinC = sin(radC);
+    float cosOC = cos(radC + PI/2); float sinOC = sin(radC + PI/2);
+    // Perpendicular cross-bar at the edge
+    u8g2.drawLine(xL + (rL-3)*cosC + 6*cosOC, hY + (rL-3)*sinC + 6*sinOC,
+                  xL + (rL-3)*cosC - 6*cosOC, hY + (rL-3)*sinC - 6*sinOC);
 
     // =============================================================
-    // --- 2. MISSION CLOCK (RIGHT - 7mm Stencil) ---
+    // --- 2. MISSION CLOCK (RIGHT) ---
     // =============================================================
-    const int xR = 80;
-    const int rR = 19; // Increased radius
-
     u8g2.drawStr(xR-3, hY-rR+7, "12");
     u8g2.drawStr(xR-2, hY+rR-2, "6");
+    u8g2.drawStr(xR+rR-6, hY+2, "3");
+    u8g2.drawStr(xR-rR+1, hY+2, "9");
 
     uint32_t ts = millis() / 1000;
     float mRad = (((ts / 60) % 60) * 6 - 90) * (PI/180);
     float sRad = ((ts % 60) * 6 - 90) * (PI/180);
 
-    // Minute Hand (Solid sword shape)
-    u8g2.drawLine(xR, hY, xR + (rR-4)*cos(mRad), hY + (rR-4)*sin(mRad));
-    u8g2.drawLine(xR, hY, xR + (rR-6)*cos(mRad+0.1), hY + (rR-6)*sin(mRad+0.1));
-    u8g2.drawLine(xR, hY, xR + (rR-6)*cos(mRad-0.1), hY + (rR-6)*sin(mRad-0.1));
+    // Minute Hand (Sword shape)
+    u8g2.drawLine(xR, hY, xR + (rR-6)*cos(mRad), hY + (rR-6)*sin(mRad));
+    u8g2.drawLine(xR, hY, xR + (rR-8)*cos(mRad+0.12), hY + (rR-8)*sin(mRad+0.12));
+    u8g2.drawLine(xR, hY, xR + (rR-8)*cos(mRad-0.12), hY + (rR-8)*sin(mRad-0.12));
 
     // Second Hand (Thin sweep)
-    u8g2.drawLine(xR, hY, xR + (rR-1)*cos(sRad), hY + (rR-1)*sin(sRad));
+    u8g2.drawLine(xR, hY, xR + (rR-2)*cos(sRad), hY + (rR-2)*sin(sRad));
 
     u8g2.sendBuffer();
-    vTaskDelay(pdMS_TO_TICKS(100)); 
+    
+    // Speeding up the task to 15Hz (66ms) for fluid motion
+    vTaskDelay(pdMS_TO_TICKS(66)); 
   }
 }
