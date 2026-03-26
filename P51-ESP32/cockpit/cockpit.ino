@@ -6,10 +6,15 @@
 #define P51_DIRTY_W  0xDEDB
 #define P51_SKY      0x641D 
 #define P51_EARTH    0x4221 
-// --- GLOBALS FOR 16-CHANNEL SUPPORT ---
+
+// --- MSP COMMAND IDS ---
 #define MSP_RC 105
 #define MSP_RAW_GPS 106
+#define MSP_ATTITUDE 108
+#define MSP_ALTITUDE 109
+#define MSP_ANALOG   110
 #define MSP_AIRSPEED 118
+#define MSP_NAV_STATUS 121
 
 // --- HARDWARE CONFIG ---
 #define console Serial0      
@@ -24,6 +29,7 @@
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
+TFT_eSprite ucSprite = TFT_eSprite(&tft);
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -31,16 +37,11 @@ float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0
 unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
 uint8_t flapPos = 0; // 0=Clean, 1=Takeoff, 2=Landing
 uint16_t rcChannels[14]; // To safely cover your 14 channels
-
-// --- HOME TRACKING ---
-int32_t homeLat = 0, homeLon = 0;
-bool homeLocked = false; // This stays true until reboot
-uint16_t distToHome = 0, dirToHome = 0;   // Absolute bearing to home
-
-// --- MSP COMMAND IDS ---
-#define MSP_ATTITUDE 108
-#define MSP_ALTITUDE 109
-#define MSP_ANALOG   110
+uint16_t distToHome = 0;
+int16_t  dirToHome = 0; // Absolute bearing from FC to Home
+bool lastGearDown = false, gearInTransit = false;
+uint32_t gearTimer = 0;
+const uint32_t GEAR_CYCLE_TIME = 5000;
 
 void setup() {
   console.begin(115200);
@@ -53,7 +54,8 @@ void setup() {
   tft.fillScreen(TFT_BLACK);
   canvas.createSprite(80, 80); 
   canvas.setTextDatum(MC_DATUM);
-  
+  ucSprite.createSprite(70, 22); 
+  ucSprite.setTextDatum(MC_DATUM);  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
   
   // Handshake
@@ -167,26 +169,39 @@ bool parseMSP() {
        lastVBatLog = vBat;
     }
   }
-  else if (cmd == MSP_RAW_GPS) { // MSP_RAW_GPS (V2)
-    // iNAV MSP V2 GPS Payload is typically 18+ bytes
-    if (size >= 16) {
-        uint8_t fixType = payload[0];      // 0 = No Fix, 3 = 3D Fix
-        uint8_t numSats = payload[1];      // Satellite count
-        
-        // Ground Speed is at Byte 14-15 (uint16_t in cm/s)
-        uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
-        
-        float newSpeedMPH = groundSpeedCMS * 0.0223694; // cm/s to MPH
-        
-        if (isDebug && (abs(newSpeedMPH - airSpeed) > 0.2)) {
-            console.printf("DEBUG -> GPS SPEED: %.1f MPH | Sats: %d | Fix: %d\n", 
-                           newSpeedMPH, numSats, fixType);
-        }
-        
-        // Update the global variable that drives your Gauge
-        airSpeed = newSpeedMPH;
-    }
+  else if (cmd == 106) { // MSP_RAW_GPS
+      if (size >= 16) {
+          uint8_t fixType = payload[0];
+          uint8_t numSats = payload[1];
+          
+          // 3. Calculate Speed (Byte 12-13 as confirmed)
+          uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
+          airSpeed = groundSpeedCMS * 0.0223694;
+          if (airSpeed < 1.5) airSpeed = 0;
+
+      }
   }
+  else if (cmd == MSP_NAV_STATUS) { 
+      if (size >= 6) {
+        // iNAV V2 Map: [0]GPS_mode, [1]Nav_state, [2-3]Dist, [4-5]Direction
+        // We trust the FC to handle when and where 'Home' is defined.
+        distToHome = (uint16_t)(payload[3] | (payload[4] << 8));
+        dirToHome  = (int16_t)(payload[5] | (payload[6] << 8));
+
+        if (isDebug) {
+          static uint16_t lastDebugDist = 0;
+          static int16_t  lastDebugDir  = 0;
+
+          if (abs((int)distToHome - (int)lastDebugDist) > 1 || abs((int)dirToHome - (int)lastDebugDir) > 1) {
+            console.printf("DEBUG -> FC HOME: %dm | BRG: %d deg\n", distToHome, dirToHome);
+            lastDebugDist = distToHome;
+            lastDebugDir = dirToHome;
+          }
+
+        }
+      }
+  }
+
   // --- AIRSPEED ---
   // else if (cmd == MSP_AIRSPEED && size >= 2) {
   //   float prevSpeed = airSpeed;
@@ -205,14 +220,15 @@ void updateMSP() {
   
   // 1. SEND REQUESTS (Every 40ms to keep it snappy)
   if (millis() - lastRequestTime > 10) {
-    cycle = (cycle + 1) % 8; // Updated to 5 to cover all cases
+    cycle = (cycle + 1) % 10; // Updated to 5 to cover all cases
     
     switch(cycle) {
-      case 0: case 2: case 4: case 6: sendMSPRequest(MSP_ATTITUDE); break;
+      case 0: case 2: case 4: case 6: case 8: sendMSPRequest(MSP_ATTITUDE); break;
       case 1: sendMSPRequest(MSP_ALTITUDE); break;
       case 3: sendMSPRequest(MSP_ANALOG); break;
       case 5: sendMSPRequest(MSP_RC); break; 
       case 7: sendMSPRequest(MSP_RAW_GPS); break;
+      case 9: sendMSPRequest(MSP_NAV_STATUS); break;
     }
     lastRequestTime = millis();
   }
@@ -404,11 +420,9 @@ void drawAltHand(int cx, int cy, float deg, int len, int width, bool is10k) {
   }
 }
 
-
-void drawTurn(int x, int y, float heading) {
+void drawTurn(int x, int y, float heading, float homeBearing) {
   canvas.fillSprite(P51_CHARCOAL); 
   int cx = 40, cy = 40;
-  
   int winY = cy - 18; 
   int winH = 22;
   int winLeft = cx - 28;
@@ -416,29 +430,38 @@ void drawTurn(int x, int y, float heading) {
   // 1. Internal Shadow
   canvas.fillRect(winLeft, winY, 56, winH, 0x0841); 
 
+  // --- NEW: GREEN HOME BAR LOGIC ---
+  // Calculate shortest distance to home bearing
+  float homeDelta = homeBearing - heading;
+  if (homeDelta > 180) homeDelta -= 360;
+  if (homeDelta < -180) homeDelta += 360;
+
+  // Map homeDelta to the drum curve
+  float homeRad = homeDelta * (PI / 180.0);
+  float homeX = cx + (sin(homeRad) * 45); 
+
+  // Draw the green bar if it's within the window view
+  if (homeX > winLeft && homeX < winLeft + 56) {
+    // A bright "Radium" Green for the home marker
+    canvas.fillRect((int)homeX - 2, winY + 1, 4, winH - 2, 0x07E0); 
+  }
+  // --- END HOME BAR ---
+
   // 2. The Drum Logic
   canvas.setTextColor(P51_RADIUM);
-  
-  // Find the nearest 5-degree mark to the current heading to start the loop
   float startAngle = floor(heading / 5.0) * 5.0;
 
   for (float a = startAngle - 40; a <= startAngle + 40; a += 5) {
-    // Delta is how many degrees this tick is from the center (heading)
     float delta = a - heading;
-    
-    // Parallax Math
     float rad = delta * (PI / 180.0);
     float scrollX = cx + (sin(rad) * 45); 
 
-    // Normalize angle for labeling (0-35)
     int displayAngle = ((int)(a + 3600) % 360);
 
     if (scrollX > winLeft - 5 && scrollX < winLeft + 61) {
-      // Draw Tick for every 5 degrees
       int tickLen = (displayAngle % 10 == 0) ? 7 : 4;
       canvas.drawFastVLine((int)scrollX, winY + winH - tickLen - 2, tickLen, P51_RADIUM);
 
-      // Draw Number if it's a 30-degree mark (3, 6, 9... 0 for 360)
       if (displayAngle % 30 == 0) {
         String label = String(displayAngle / 10);
         canvas.drawCentreString(label, (int)scrollX, winY + 2, 2);
@@ -454,10 +477,11 @@ void drawTurn(int x, int y, float heading) {
 
   // 4. Stationary Elements
   canvas.drawRect(winLeft, winY, 56, winH, 0x4228); 
+  // Center Lubber Line (White)
   canvas.fillRect(cx - 1, winY - 3, 2, winH + 6, TFT_WHITE); 
 
-  canvas.setTextColor(0x4228); // Muted, aged grey
-  canvas.drawCentreString("DIREC.GYRO", cx, cy + 10, 1); // Size 1
+  canvas.setTextColor(0x4228);
+  canvas.drawCentreString("DIREC.GYRO", cx, cy + 10, 1);
   canvas.drawCentreString("AN 5735-1A", cx, cy + 20, 1);
   canvas.pushSprite(x - 40, y - 40);
 }
@@ -557,6 +581,40 @@ void drawVSI(int x, int y, float vspd) {
   canvas.pushSprite(x - 40, y - 40);
 }
 
+void drawGearStatus(int screenX, int screenY) {
+  ucSprite.fillSprite(P51_CHARCOAL); // Clear background
+
+  // Local center for the 70x22 sprite
+  int localCX = 34; 
+  int localCY = 11; 
+  int spacing = 20; 
+
+  // Logic for the 7-second transit
+  if (gearDown != lastGearDown) {
+    gearInTransit = true;
+    gearTimer = millis();
+    lastGearDown = gearDown;
+  }
+  if (gearInTransit && (millis() - gearTimer > 7000)) {
+    gearInTransit = false;
+  }
+
+  // RED LIGHT (UNSAFE/TRANSIT)
+  if (gearInTransit) {
+    ucSprite.fillCircle(localCX + spacing, localCY, 6, TFT_RED);
+    ucSprite.drawCircle(localCX + spacing, localCY, 7, 0x8000); // Glow
+  }
+
+  // GREEN LIGHT (LOCKED DOWN)
+  if (gearDown && !gearInTransit) {
+    ucSprite.fillCircle(localCX - spacing, localCY, 6, TFT_GREEN);
+    ucSprite.drawCircle(localCX - spacing, localCY, 7, 0x03E0); // Glow
+  }
+
+  // Finally, push the small gear box to the physical screen coordinates
+  ucSprite.pushSprite(screenX, screenY);
+}
+
 void loop() {
   static unsigned long lastFrame = 0;
   
@@ -575,11 +633,12 @@ void loop() {
   }
 
   drawAirspeed(33, 48, airSpeed);
-  drawTurn(140, 48, heading);
+  drawTurn(140, 48, (float)heading, (float)dirToHome);
   drawHorizon(253, 54, roll, pitch);
   drawAltimeter(33, 144, alt);
   drawBank(146, 170, roll);
   drawVSI(253, 170, vsi / 100.0); // Convert cm/s to m/s for display
+  drawGearStatus(140,220);
   
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
