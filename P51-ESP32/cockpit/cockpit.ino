@@ -718,72 +718,68 @@ void loop() {
 void oledTaskCode(void * pvParameters) {
   for(;;) {
     u8g2.clearBuffer();
-    const int hubY = 32; 
+    const int hY = 32; // Vertical Center
 
-    // =========================================================================
-    // --- 1. REMOTE COMPASS (Double-Bar Frame Style) ---
-    // =========================================================================
-    const int xL = 22; 
-    const int rL = 22;
-    u8g2.drawCircle(xL, hubY, rL); 
+    // =============================================================
+    // --- 1. REMOTE COMPASS (LEFT - 9mm Stencil) ---
+    // =============================================================
+    const int xL = 22;
+    const int rL = 24; // Increased radius (No border to hit)
 
-    // Cardinal Labels
-    u8g2.setFont(u8g2_font_4x6_tr); 
-    u8g2.drawStr(xL-2, hubY-rL+7, "N"); 
-    u8g2.drawStr(xL-2, hubY+rL-2, "S"); 
-    u8g2.drawStr(xL+rL-7, hubY+2, "E"); 
-    u8g2.drawStr(xL-rL+2, hubY+2, "W"); 
+    // Cardinal Labels (Tucked inside the 9mm circle)
+    u8g2.setFont(u8g2_font_4x6_tr);
+    u8g2.drawStr(xL-2, hY-rL+7, "N");
+    u8g2.drawStr(xL-2, hY+rL-2, "S");
+    u8g2.drawStr(xL+rL-7, hY+2, "E");
+    u8g2.drawStr(xL-rL+2, hY+2, "W");
 
-    // --- The Double-Bar Needle ---
-    float hRad = (sharedHeading - 90.0) * (PI / 180.0);
-    float offRad = hRad + (PI / 2.0); // 90 degrees offset for the "width"
+    // --- THE "FRAME" NEEDLE ---
+    float rad = (sharedHeading - 90.0) * (PI / 180.0);
+    float cosR = cos(rad);
+    float sinR = sin(rad);
+    float cosO = cos(rad + PI/2); // 90 deg offset for width
+    float sinO = sin(rad + PI/2);
     
-    // We draw two parallel lines 2 pixels apart
-    int xOff = 1 * cos(offRad); 
-    int yOff = 1 * sin(offRad);
+    float w = 1.8; // Width of the frame
 
-    // Side A of the Frame
-    u8g2.drawLine(xL + xOff, hubY + yOff, xL + xOff + (rL-2)*cos(hRad), hubY + yOff + (rL-2)*sin(hRad));
-    u8g2.drawLine(xL + xOff, hubY + yOff, xL + xOff - (rL-10)*cos(hRad), hubY + yOff - (rL-10)*sin(hRad));
+    // Draw the two parallel "Rails"
+    // Side A
+    u8g2.drawLine(xL + w*cosO, hY + w*sinO, xL + (rL-2)*cosR + w*cosO, hY + (rL-2)*sinR + w*sinO);
+    u8g2.drawLine(xL + w*cosO, hY + w*sinO, xL - (rL-10)*cosR + w*cosO, hY - (rL-10)*sinR + w*sinO);
+    // Side B
+    u8g2.drawLine(xL - w*cosO, hY - w*sinO, xL + (rL-2)*cosR - w*cosO, hY + (rL-2)*sinR - w*sinO);
+    u8g2.drawLine(xL - w*cosO, hY - w*sinO, xL - (rL-10)*cosR - w*cosO, hY - (rL-10)*sinR - w*sinO);
 
-    // Side B of the Frame
-    u8g2.drawLine(xL - xOff, hubY - yOff, xL - xOff + (rL-2)*cos(hRad), hubY - yOff + (rL-2)*sin(hRad));
-    u8g2.drawLine(xL - xOff, hubY - yOff, xL - xOff - (rL-10)*cos(hRad), hubY - yOff - (rL-10)*sin(hRad));
+    // Tip Cross-Bar (Creates the "Arrow" closure)
+    u8g2.drawLine(xL + (rL-2)*cosR + w*cosO, hY + (rL-2)*sinR + w*sinO,
+                  xL + (rL-2)*cosR - w*cosO, hY + (rL-2)*sinR - w*sinO);
+                  
+    // Tail Cross-Bar
+    u8g2.drawLine(xL - (rL-10)*cosR + w*cosO, hY - (rL-10)*sinR + w*sinO,
+                  xL - (rL-10)*cosR - w*cosO, hY - (rL-10)*sinR - w*sinO);
 
-    // Cross-member (The "H" bar near the tip)
-    u8g2.drawLine(xL + (rL-6)*cos(hRad) + xOff, hubY + (rL-6)*sin(hRad) + yOff, 
-                  xL + (rL-6)*cos(hRad) - xOff, hubY + (rL-6)*sin(hRad) - yOff);
+    // =============================================================
+    // --- 2. MISSION CLOCK (RIGHT - 7mm Stencil) ---
+    // =============================================================
+    const int xR = 80;
+    const int rR = 19; // Increased radius
 
-    // --- Fixed Lubber Line (The top reference mark) ---
-    u8g2.drawLine(xL, hubY - rL, xL, hubY - rL + 3);
+    u8g2.drawStr(xR-3, hY-rR+7, "12");
+    u8g2.drawStr(xR-2, hY+rR-2, "6");
 
+    uint32_t ts = millis() / 1000;
+    float mRad = (((ts / 60) % 60) * 6 - 90) * (PI/180);
+    float sRad = ((ts % 60) * 6 - 90) * (PI/180);
 
-    // =========================================================================
-    // --- 2. ELGIN MISSION CLOCK (Simplified 2-Hand) ---
-    // =========================================================================
-    const int xR = 80; 
-    const int rR = 17;
-    u8g2.drawCircle(xR, hubY, rR); 
+    // Minute Hand (Solid sword shape)
+    u8g2.drawLine(xR, hY, xR + (rR-4)*cos(mRad), hY + (rR-4)*sin(mRad));
+    u8g2.drawLine(xR, hY, xR + (rR-6)*cos(mRad+0.1), hY + (rR-6)*sin(mRad+0.1));
+    u8g2.drawLine(xR, hY, xR + (rR-6)*cos(mRad-0.1), hY + (rR-6)*sin(mRad-0.1));
 
-    u8g2.drawStr(xR-3, hubY-rR+7, "12");
-    u8g2.drawStr(xR-2, hubY+rR-2, "6"); 
-    u8g2.drawPixel(xR+rR-3, hubY); 
-    u8g2.drawPixel(xR-rR+3, hubY); 
-
-    uint32_t totalSecs = millis() / 1000;
-    float sDeg = (totalSecs % 60) * 6 - 90;
-    float mDeg = ((totalSecs / 60) % 60) * 6 - 90;
-
-    // Minute Hand (Sword style)
-    float mCRad = mDeg * (PI / 180.0);
-    u8g2.drawLine(xR, hubY, xR + (rR-5)*cos(mCRad), hubY + (rR-5)*sin(mCRad));
-    u8g2.drawLine(xR, hubY, xR + (rR-7)*cos(mCRad+0.15), hubY + (rR-7)*sin(mCRad+0.15));
-
-    // Second Hand (Thin)
-    float sCRad = sDeg * (PI / 180.0);
-    u8g2.drawLine(xR, hubY, xR + (rR-2)*cos(sCRad), hubY + (rR-2)*sin(sCRad));
+    // Second Hand (Thin sweep)
+    u8g2.drawLine(xR, hY, xR + (rR-1)*cos(sRad), hY + (rR-1)*sin(sRad));
 
     u8g2.sendBuffer();
-    vTaskDelay(pdMS_TO_TICKS(100)); // 10Hz for smoother sweeping
+    vTaskDelay(pdMS_TO_TICKS(100)); 
   }
 }
