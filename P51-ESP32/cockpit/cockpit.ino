@@ -1,4 +1,6 @@
 #include <TFT_eSPI.h>
+#include <U8g2lib.h>
+#include <Wire.h>
 
 // --- P-51 VINTAGE PALETTE ---
 #define P51_CHARCOAL 0x18C3
@@ -27,9 +29,14 @@
 
 #define isDebug true
 
+TaskHandle_t OLEDTask;
+float sharedHeading = 0; // We use this to pass data between cores
+
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 TFT_eSprite ucSprite = TFT_eSprite(&tft);
+// Initialize OLED (SSD1306 128x64)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -57,7 +64,15 @@ void setup() {
   ucSprite.createSprite(70, 22); 
   ucSprite.setTextDatum(MC_DATUM);  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
+
+
+  // Initialize I2C and OLED
+  Wire.begin(8, 9); // SDA on 8, SCL on 9 for ESP32-S3
+  Wire.setClock(800000); // Set I2C to 400kHz
+  u8g2.begin();
   
+  console.println("--- OLED MAG COMPASS ONLINE ---");
+
   // Handshake
   unsigned long startScan = millis();
   while (millis() - startScan < 5000) {
@@ -69,6 +84,62 @@ void setup() {
       break;
     }
   }
+
+  // Start the OLED task on Core 0 (Main loop runs on Core 1)
+  xTaskCreatePinnedToCore(
+      oledTaskCode,   /* Function to implement the task */
+      "OLEDTask",     /* Name of the task */
+      10000,          /* Stack size in words */
+      NULL,           /* Task input parameter */
+      1,              /* Priority of the task */
+      &OLEDTask,      /* Task handle */
+      0);             /* Core where the task should run */
+}
+
+
+void setupOLED() {
+  Wire.begin(8, 9); // SDA, SCL
+  u8g2.begin();
+}
+
+void drawOLED(float heading) {
+  static uint32_t lastOLED = 0;
+  // 500ms (2Hz) is the "Sweet Spot" to minimize TFT flickering
+  if (millis() - lastOLED < 500) return; 
+  lastOLED = millis();
+
+  u8g2.clearBuffer();
+  
+  // --- 1. MAGNETIC COMPASS ---
+  u8g2.setFont(u8g2_font_7x14_tf); 
+  u8g2.drawStr(0, 12, "MAG. COMPASS");
+  
+  // Cast float to int for the display
+  int iHeading = (int)heading % 360;
+  if (iHeading < 0) iHeading += 360; // Standardize 0-359
+  
+  char hBuf[4];
+  sprintf(hBuf, "%03d", iHeading);
+  
+  u8g2.setFont(u8g2_font_logisoso22_tn); // Nice big military digits
+  u8g2.drawStr(0, 42, hBuf);
+  u8g2.drawTriangle(18, 48, 23, 58, 13, 58); // Pointer arrow
+
+  // --- 2. MISSION CLOCK (Mins:Secs) ---
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(80, 12, "MISSION");
+
+  uint32_t totalSecs = millis() / 1000;
+  uint32_t m = totalSecs / 60;
+  uint32_t s = totalSecs % 60;
+  
+  char tBuf[8];
+  sprintf(tBuf, "%02d:%02d", m, s); // Minutes:Seconds
+  
+  u8g2.setFont(u8g2_font_9x15_tf);
+  u8g2.drawStr(80, 32, tBuf);
+
+  u8g2.sendBuffer(); // This is the heavy lifting command
 }
 
 // --- CORE MSP LOGIC ---
@@ -632,6 +703,8 @@ void loop() {
     updateMSP();
   }
 
+  sharedHeading = heading; // Update the value for the other core to see
+
   drawAirspeed(33, 48, airSpeed);
   drawTurn(140, 48, (float)heading, (float)dirToHome);
   drawHorizon(253, 54, roll, pitch);
@@ -639,6 +712,78 @@ void loop() {
   drawBank(146, 170, roll);
   drawVSI(253, 170, vsi / 100.0); // Convert cm/s to m/s for display
   drawGearStatus(140,220);
-  
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
+}
+
+void oledTaskCode(void * pvParameters) {
+  for(;;) {
+    u8g2.clearBuffer();
+    const int hubY = 32; 
+
+    // =========================================================================
+    // --- 1. REMOTE COMPASS (Double-Bar Frame Style) ---
+    // =========================================================================
+    const int xL = 22; 
+    const int rL = 22;
+    u8g2.drawCircle(xL, hubY, rL); 
+
+    // Cardinal Labels
+    u8g2.setFont(u8g2_font_4x6_tr); 
+    u8g2.drawStr(xL-2, hubY-rL+7, "N"); 
+    u8g2.drawStr(xL-2, hubY+rL-2, "S"); 
+    u8g2.drawStr(xL+rL-7, hubY+2, "E"); 
+    u8g2.drawStr(xL-rL+2, hubY+2, "W"); 
+
+    // --- The Double-Bar Needle ---
+    float hRad = (sharedHeading - 90.0) * (PI / 180.0);
+    float offRad = hRad + (PI / 2.0); // 90 degrees offset for the "width"
+    
+    // We draw two parallel lines 2 pixels apart
+    int xOff = 1 * cos(offRad); 
+    int yOff = 1 * sin(offRad);
+
+    // Side A of the Frame
+    u8g2.drawLine(xL + xOff, hubY + yOff, xL + xOff + (rL-2)*cos(hRad), hubY + yOff + (rL-2)*sin(hRad));
+    u8g2.drawLine(xL + xOff, hubY + yOff, xL + xOff - (rL-10)*cos(hRad), hubY + yOff - (rL-10)*sin(hRad));
+
+    // Side B of the Frame
+    u8g2.drawLine(xL - xOff, hubY - yOff, xL - xOff + (rL-2)*cos(hRad), hubY - yOff + (rL-2)*sin(hRad));
+    u8g2.drawLine(xL - xOff, hubY - yOff, xL - xOff - (rL-10)*cos(hRad), hubY - yOff - (rL-10)*sin(hRad));
+
+    // Cross-member (The "H" bar near the tip)
+    u8g2.drawLine(xL + (rL-6)*cos(hRad) + xOff, hubY + (rL-6)*sin(hRad) + yOff, 
+                  xL + (rL-6)*cos(hRad) - xOff, hubY + (rL-6)*sin(hRad) - yOff);
+
+    // --- Fixed Lubber Line (The top reference mark) ---
+    u8g2.drawLine(xL, hubY - rL, xL, hubY - rL + 3);
+
+
+    // =========================================================================
+    // --- 2. ELGIN MISSION CLOCK (Simplified 2-Hand) ---
+    // =========================================================================
+    const int xR = 80; 
+    const int rR = 17;
+    u8g2.drawCircle(xR, hubY, rR); 
+
+    u8g2.drawStr(xR-3, hubY-rR+7, "12");
+    u8g2.drawStr(xR-2, hubY+rR-2, "6"); 
+    u8g2.drawPixel(xR+rR-3, hubY); 
+    u8g2.drawPixel(xR-rR+3, hubY); 
+
+    uint32_t totalSecs = millis() / 1000;
+    float sDeg = (totalSecs % 60) * 6 - 90;
+    float mDeg = ((totalSecs / 60) % 60) * 6 - 90;
+
+    // Minute Hand (Sword style)
+    float mCRad = mDeg * (PI / 180.0);
+    u8g2.drawLine(xR, hubY, xR + (rR-5)*cos(mCRad), hubY + (rR-5)*sin(mCRad));
+    u8g2.drawLine(xR, hubY, xR + (rR-7)*cos(mCRad+0.15), hubY + (rR-7)*sin(mCRad+0.15));
+
+    // Second Hand (Thin)
+    float sCRad = sDeg * (PI / 180.0);
+    u8g2.drawLine(xR, hubY, xR + (rR-2)*cos(sCRad), hubY + (rR-2)*sin(sCRad));
+
+    u8g2.sendBuffer();
+    vTaskDelay(pdMS_TO_TICKS(100)); // 10Hz for smoother sweeping
+  }
 }
