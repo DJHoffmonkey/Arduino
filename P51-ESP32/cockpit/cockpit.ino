@@ -718,82 +718,72 @@ void loop() {
 }
 
 void oledTaskCode(void * pvParameters) {
-  static bool wasArmed = false; // Local latch to detect the moment of arming
+  static bool wasArmed = false; 
+  const TickType_t xFrequency = pdMS_TO_TICKS(40); // Consistent 25Hz
+  TickType_t xLastWakeTime = xTaskGetTickCount();
 
   for(;;) {
-    u8g2.clearBuffer();
-    const int hY = 32; 
-    const int xL = 22;
-    const int xR = 80;
-    const int rL = 24; 
-    const int rR = 19; 
+    // 1. DATA SNAPSHOT & MATH (Get it done before touching the buffer)
+    float h = sharedHeading;
+    float dH = dirToHome;
+    bool armed = isArmed;
+    uint32_t now = millis();
 
+    if (armed) {
+      if (!wasArmed) { missionStartTime = now; wasArmed = true; }
+      finalFlightTime = (now - missionStartTime) / 1000;
+    } else { wasArmed = false; }
+
+    // Compass Math
+    float radH = (h - 90.0) * (PI / 180.0);
+    float cH = cos(radH), sH = sin(radH);
+    float cO = cos(radH + 1.5708), sO = sin(radH + 1.5708);
+    
+    // Clock Math
+    uint32_t s = finalFlightTime;
+    float mRad = (s == 0) ? -1.5708 : (((float)((s / 60) % 60) * 6.0) - 90.0) * (PI/180.0);
+    float sRad = (s == 0) ? -1.5708 : (((float)(s % 60) * 6.0) - 90.0) * (PI/180.0);
+
+    // 2. DRAWING (High speed buffer writes)
+    u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_4x6_tr);
 
-    // =============================================================
-    // --- 1. REMOTE COMPASS (LEFT) ---
-    // =============================================================
-    u8g2.drawStr(xL-2, hY-rL+7, "N"); 
-    u8g2.drawStr(xL-2, hY+rL-2, "S"); 
-    u8g2.drawStr(xL+rL-7, hY+2, "E"); 
-    u8g2.drawStr(xL-rL+2, hY+2, "W"); 
+    // Compass Base
+    const int hY = 32, xL = 22, xR = 80, rL = 24, rR = 19;
+    u8g2.drawStr(xL-2, hY-rL+7, "N"); u8g2.drawStr(xL-2, hY+rL-2, "S"); 
+    u8g2.drawStr(xL+rL-7, hY+2, "E"); u8g2.drawStr(xL-rL+2, hY+2, "W"); 
 
     for (int a = 30; a < 360; a += 30) {
       if (a % 90 == 0) continue; 
       float tR = (a - 90) * (PI/180.0);
-      u8g2.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-3)*cos(tR)), (int)(hY+(rL-3)*sin(tR)));
+      u8g2.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-4)*cos(tR)), (int)(hY+(rL-4)*sin(tR)));
     }
 
-    // --- HEADING NEEDLE (STABLE DOUBLE-RAIL) ---
-    float radH = (sharedHeading - 90.0) * (PI / 180.0);
-    float cH = cos(radH); float sH = sin(radH);
-    float cO = cos(radH + 1.5708); float sO = sin(radH + 1.5708);
-    float w = 1.6; // Width of the gap
+    // Double Rail Needle
+    int tx1 = (int)(xL + (rL-2)*cH + 1.6*cO), ty1 = (int)(hY + (rL-2)*sH + 1.6*sO);
+    int tx2 = (int)(xL + (rL-2)*cH - 1.6*cO), ty2 = (int)(hY + (rL-2)*sH - 1.6*sO);
+    int bx1 = (int)(xL + 2*cH + 1.6*cO), by1 = (int)(hY + 2*sH + 1.6*sO);
+    int bx2 = (int)(xL + 2*cH - 1.6*cO), by2 = (int)(hY + 2*sH - 1.6*sO);
+    u8g2.drawLine(bx1, by1, tx1, ty1); u8g2.drawLine(bx2, by2, tx2, ty2); 
+    u8g2.drawLine(tx1, ty1, tx2, ty2); 
+    u8g2.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH));
 
-    // Define the coordinates to fix the "Not Defined" errors
-    int tx1 = (int)(xL + (rL-2)*cH + w*cO); int ty1 = (int)(hY + (rL-2)*sH + w*sO);
-    int tx2 = (int)(xL + (rL-2)*cH - w*cO); int ty2 = (int)(hY + (rL-2)*sH - w*sO);
-    int bx1 = (int)(xL + 2*cH + w*cO); int by1 = (int)(hY + 2*sH + w*sO);
-    int bx2 = (int)(xL + 2*cH - w*cO); int by2 = (int)(hY + 2*sH - w*sO);
+    // Home Bug
+    float radC = (dH - 90.0) * (PI / 180.0);
+    int bugX = (int)(xL + (rL-3)*cos(radC)), bugY = (int)(hY + (rL-3)*sin(radC));
+    u8g2.drawLine((int)(bugX + 6*cos(radC+1.5708)), (int)(bugY + 6*sin(radC+1.5708)), 
+                  (int)(bugX - 6*cos(radC+1.5708)), (int)(bugY - 6*sin(radC+1.5708)));
 
-    u8g2.drawLine(bx1, by1, tx1, ty1); // Side Rail 1
-    u8g2.drawLine(bx2, by2, tx2, ty2); // Side Rail 2
-    u8g2.drawLine(tx1, ty1, tx2, ty2); // THE FLAT CAP
-    u8g2.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH)); // Tail
-
-    // --- HOME BUG ---
-    float radC = (dirToHome - 90.0) * (PI / 180.0);
-    int bugX = (int)(xL + (rL-3)*cos(radC)); int bugY = (int)(hY + (rL-3)*sin(radC));
-    float cOC = cos(radC + 1.5708); float sOC = sin(radC + 1.5708);
-    u8g2.drawLine((int)(bugX + 5*cOC), (int)(bugY + 5*sOC), (int)(bugX - 5*cOC), (int)(bugY - 5*sOC));
-
-    // =============================================================
-    // --- 2. ELGIN MISSION CLOCK (RIGHT) ---
-    // =============================================================
+    // Clock
     u8g2.drawStr(xR-3, hY-rR+7, "12"); u8g2.drawStr(xR-2, hY+rR-2, "6");
     u8g2.drawStr(xR+rR-6, hY+2, "3"); u8g2.drawStr(xR-rR+1, hY+2, "9");
+    u8g2.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad)));
+    u8g2.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad)));
 
-    // --- MISSION TIMER LOGIC ---
-    if (isArmed) {
-      if (!wasArmed) {
-        missionStartTime = millis(); // Set start time on first arm
-        wasArmed = true;
-      }
-      finalFlightTime = (millis() - missionStartTime) / 1000;
-    } else {
-      wasArmed = false; // Reset latch so next arming triggers a reset
-    }
-
-    uint32_t s = finalFlightTime;
-    
-    // Force 12 o'clock if s=0, otherwise calculate sweep
-    float mRad = (s == 0) ? -1.5708 : (((float)((s / 60) % 60) * 6.0) - 90.0) * (PI/180.0);
-    float sRad = (s == 0) ? -1.5708 : (((float)(s % 60) * 6.0) - 90.0) * (PI/180.0);
-
-    u8g2.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad))); // Min
-    u8g2.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad))); // Sec
-
+    // 3. PUSH TO SCREEN
     u8g2.sendBuffer();
-    vTaskDelay(pdMS_TO_TICKS(50)); 
+
+    // Wait for the next precise interval
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
