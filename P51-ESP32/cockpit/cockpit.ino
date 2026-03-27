@@ -778,37 +778,45 @@ void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float r, float h
                          tipX - (pX * capWidth), tipY - (pY * capWidth));
 }
 
-void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint32_t secondsTotal) {
-    canvas.setFont(u8g2_font_4x6_tr);
+void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint32_t msTotal) {
+    // 1. LARGER FONT
+    canvas.setFont(u8g2_font_5x7_tr);
     
-    // Position numbers at 65% of radius to ensure they show through the 7mm stencil
-    canvas.drawStr(centerX - 4, centerY - (r * 0.65f), "12"); 
-    canvas.drawStr(centerX - 2, centerY + (r * 0.65f) + 5, "6");
-    canvas.drawStr(centerX + (r * 0.65f), centerY + 2, "3");
-    canvas.drawStr(centerX - (r * 0.65f) - 4, centerY + 2, "9");
+    // Labels (Adjusted offsets for the larger font)
+    canvas.drawStr(centerX - 5, centerY - 10, "10"); 
+    canvas.drawStr(centerX - 3, centerY + 16, "5");
+    canvas.drawStr(centerX + 11, centerY + 3,  "2"); 
+    canvas.drawStr(centerX - 18, centerY + 3,  "7");
 
-    // Small Ticks
-    for (int i = 30; i < 360; i += 30) {
-        if (i % 90 == 0) continue; 
+    // 2. DOT TICKS
+    for (int i = 0; i < 360; i += 36) { 
         float rad = (i - 90.0f) * (M_PI / 180.0f);
-        drawSafeLine(canvas, 
-            centerX + r * cosf(rad), centerY + r * sinf(rad),
-            centerX + (r - 2.0f) * cosf(rad), centerY + (r - 2.0f) * sinf(rad)
-        );
+        canvas.drawPixel((int)(centerX + r * cosf(rad)), (int)(centerY + r * sinf(rad)));
     }
 
-    // Single needle mapping 60 mins to 360 deg
-    float mins = (float)(secondsTotal % 3600) / 60.0f; 
-    float needleRad = (mins * 6.0f - 90.0f) * (M_PI / 180.0f);
+    // --- 3. MINUTES HAND (Thick, 10 Min Lap) ---
+    float minMS = (float)(msTotal % 600000);
+    float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
+    float minTipX = centerX + (r * 0.75f) * cosf(minRad);
+    float minTipY = centerY + (r * 0.75f) * sinf(minRad);
     
-    // Tip at 50% radius to clear the numbers completely
-    float tipX = centerX + (r * 0.50f) * cosf(needleRad);
-    float tipY = centerY + (r * 0.50f) * sinf(needleRad);
+    float pX = -sinf(minRad), pY = cosf(minRad);
+    for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
+        drawSafeLine(canvas, centerX + (pX * i), centerY + (pY * i), minTipX + (pX * i), minTipY + (pY * i));
+    }
 
-    drawSafeLine(canvas, centerX, centerY, tipX, tipY);
+    // --- 4. SECONDS HAND (Thin, 1 Min Lap, LONGER) ---
+    float secMS = (float)(msTotal % 60000);
+    float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
+    
+    // Increased length to 60% of radius (approx 10 pixels)
+    float secTipX = centerX + (r * 0.60f) * cosf(secRad);
+    float secTipY = centerY + (r * 0.60f) * sinf(secRad);
+    
+    drawSafeLine(canvas, centerX, centerY, secTipX, secTipY);
 
-    // 2x2 Center Hub
-    canvas.drawBox((int)centerX, (int)centerY, 2, 2);
+    // 5. CENTER HUB
+    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
 }
 
 void drawTacho(U8G2 &canvas, float centerX, float centerY, float rpm, float maxRpm) {
@@ -880,6 +888,8 @@ void updateCompassAndClockDisplay() {
   static float visualHeading = 0.0f;
   static float visualHome = 0.0f;
   const float smoothingAlpha = 0.15f; 
+  
+  static uint32_t missionStartTime = 0; 
   static bool wasArmed = false; 
 
   // --- 1. SMOOTHING LOGIC ---
@@ -893,27 +903,33 @@ void updateCompassAndClockDisplay() {
   if (deltaHome < -180.0f) deltaHome += 360.0f;
   visualHome += deltaHome * smoothingAlpha;
 
+  // --- 2. MISSION TIMER LOGIC (Smooth Milliseconds) ---
   if (isArmed) {
-      if (!wasArmed) { missionStartTime = millis(); wasArmed = true; }
-      finalFlightTime = (millis() - missionStartTime) / 1000;
-  } else { wasArmed = false; }
+      if (!wasArmed) { 
+          missionStartTime = millis(); 
+          wasArmed = true; 
+      }
+      // REMOVED "/ 1000" to keep movement fluid
+      finalFlightTime = (millis() - missionStartTime); 
+  } else { 
+      wasArmed = false; 
+  }
 
-  // --- 2. PARAMETRIC CONSTANTS ---
+  // --- 3. PARAMETRIC CONSTANTS ---
   const float compassR = 22.0f; 
-  const float clockR   = 13.0f; // 7mm Diameter
-  
+  const float clockR   = 16.0f; 
   const float compassX = 28.0f;
-  const float clockX   = 88.0f; // Shifted Left by 6px (from 94)
+  const float clockX   = 88.0f; 
   const float centerY  = 32.0f;
 
-  // --- 3. DRAW & SEND ---
+  // --- 4. DRAW & SEND ---
   u8g2_CompassAndClock.clearBuffer();
 
   drawCompassFrame(u8g2_CompassAndClock, compassX, centerY, compassR);
   drawHomeNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHome);
   drawHeadingNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHeading);
   
-  // Tiny 7mm Clock
+  // Now passing milliseconds
   drawMissionClock(u8g2_CompassAndClock, clockX, centerY, clockR, finalFlightTime);
 
   u8g2_CompassAndClock.sendBuffer(); 
