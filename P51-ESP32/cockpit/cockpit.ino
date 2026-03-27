@@ -92,8 +92,8 @@ void setup() {
 }
 
 void setupOLED_CompassAndClock() {
-  Wire.begin(8, 9); // SDA, SCL
-  Wire.setClock(800000); // Set I2C to 400kHz
+  Wire.begin(8, 9); 
+  Wire.setClock(400000); // 400kHz is safer for SSD1306 than 800kHz to prevent flickering
   u8g2_CompassAndClock.begin();
   console.println("--- OLED MAG COMPASS ONLINE ---");
 }
@@ -672,39 +672,53 @@ void loop() {
 
 void oled_CompassAndClockTaskCode(void * pvParameters) {
   static bool wasArmed = false; 
-  const TickType_t xFrequency = pdMS_TO_TICKS(40); // Consistent 25Hz
+  const TickType_t xFrequency = pdMS_TO_TICKS(40); 
   TickType_t xLastWakeTime = xTaskGetTickCount();
 
   for(;;) {
-    // 1. DATA SNAPSHOT & MATH (Get it done before touching the buffer)
+    // 1. DATA SNAPSHOT
     float h = sharedHeading;
-    float dH = dirToHome;
+    float dH = (float)dirToHome;
     bool armed = isArmed;
     uint32_t now = millis();
 
+    // Mission Timer Logic
     if (armed) {
       if (!wasArmed) { missionStartTime = now; wasArmed = true; }
       finalFlightTime = (now - missionStartTime) / 1000;
     } else { wasArmed = false; }
 
-    // Compass Math
+    // --- COORDINATE SYSTEM (MOVED DOWN) ---
+    const int hY = 40; // Dropped from 32 to 40
+    const int xL = 22;
+    const int xR = 80;
+    const int rL = 24; 
+    const int rR = 19; 
+
+    // --- MATH SECTION ---
     float radH = (h - 90.0) * (PI / 180.0);
     float cH = cos(radH), sH = sin(radH);
     float cO = cos(radH + 1.5708), sO = sin(radH + 1.5708);
     
-    // Clock Math
+    float radC = (dH - 90.0) * (PI / 180.0);
+    float cOC = cos(radC + 1.5708), sOC = sin(radC + 1.5708);
+    // Home Bug center position
+    int bugX = (int)(xL + (rL-3) * cos(radC)); 
+    int bugY = (int)(hY + (rL-3) * sin(radC)); 
+
     uint32_t s = finalFlightTime;
     float mRad = (s == 0) ? -1.5708 : (((float)((s / 60) % 60) * 6.0) - 90.0) * (PI/180.0);
     float sRad = (s == 0) ? -1.5708 : (((float)(s % 60) * 6.0) - 90.0) * (PI/180.0);
 
-    // 2. DRAWING (High speed buffer writes)
+    // 2. DRAWING
     u8g2_CompassAndClock.clearBuffer();
     u8g2_CompassAndClock.setFont(u8g2_font_4x6_tr);
 
-    // Compass Base
-    const int hY = 32, xL = 22, xR = 80, rL = 24, rR = 19;
-    u8g2_CompassAndClock.drawStr(xL-2, hY-rL+7, "N"); u8g2_CompassAndClock.drawStr(xL-2, hY+rL-2, "S"); 
-    u8g2_CompassAndClock.drawStr(xL+rL-7, hY+2, "E"); u8g2_CompassAndClock.drawStr(xL-rL+2, hY+2, "W"); 
+    // --- COMPASS (LEFT) ---
+    u8g2_CompassAndClock.drawStr(xL-2, hY-rL+7, "N"); 
+    u8g2_CompassAndClock.drawStr(xL-2, hY+rL-2, "S"); 
+    u8g2_CompassAndClock.drawStr(xL+rL-7, hY+2, "E"); 
+    u8g2_CompassAndClock.drawStr(xL-rL+2, hY+2, "W"); 
 
     for (int a = 30; a < 360; a += 30) {
       if (a % 90 == 0) continue; 
@@ -712,31 +726,30 @@ void oled_CompassAndClockTaskCode(void * pvParameters) {
       u8g2_CompassAndClock.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-4)*cos(tR)), (int)(hY+(rL-4)*sin(tR)));
     }
 
-    // Double Rail Needle
-    int tx1 = (int)(xL + (rL-2)*cH + 1.6*cO), ty1 = (int)(hY + (rL-2)*sH + 1.6*sO);
-    int tx2 = (int)(xL + (rL-2)*cH - 1.6*cO), ty2 = (int)(hY + (rL-2)*sH - 1.6*sO);
-    int bx1 = (int)(xL + 2*cH + 1.6*cO), by1 = (int)(hY + 2*sH + 1.6*sO);
-    int bx2 = (int)(xL + 2*cH - 1.6*cO), by2 = (int)(hY + 2*sH - 1.6*sO);
-    u8g2_CompassAndClock.drawLine(bx1, by1, tx1, ty1); u8g2_CompassAndClock.drawLine(bx2, by2, tx2, ty2); 
-    u8g2_CompassAndClock.drawLine(tx1, ty1, tx2, ty2); 
-    u8g2_CompassAndClock.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH));
+    // Double Rail Needle + FIXED MOVING FLAT CAP
+    float tipR = rL - 2; // Radius to the tip
+    int tx1 = (int)(xL + tipR*cH + 1.6*cO); int ty1 = (int)(hY + tipR*sH + 1.6*sO);
+    int tx2 = (int)(xL + tipR*cH - 1.6*cO); int ty2 = (int)(hY + tipR*sH - 1.6*sO);
+    int bx1 = (int)(xL + 2*cH + 1.6*cO);    int by1 = (int)(hY + 2*sH + 1.6*sO);
+    int bx2 = (int)(xL + 2*cH - 1.6*cO);    int by2 = (int)(hY + 2*sH - 1.6*sO);
+
+    u8g2_CompassAndClock.drawLine(bx1, by1, tx1, ty1); 
+    u8g2_CompassAndClock.drawLine(bx2, by2, tx2, ty2); 
+    u8g2_CompassAndClock.drawLine(tx1, ty1, tx2, ty2); // This will now rotate correctly
+    u8g2_CompassAndClock.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH)); // Tail
 
     // Home Bug
-    float radC = (dH - 90.0) * (PI / 180.0);
-    int bugX = (int)(xL + (rL-3)*cos(radC)), bugY = (int)(hY + (rL-3)*sin(radC));
-    u8g2_CompassAndClock.drawLine((int)(bugX + 6*cos(radC+1.5708)), (int)(bugY + 6*sin(radC+1.5708)), 
-                  (int)(bugX - 6*cos(radC+1.5708)), (int)(bugY - 6*sin(radC+1.5708)));
+    u8g2_CompassAndClock.drawLine((int)(bugX + 6*cOC), (int)(bugY + 6*sOC), (int)(bugX - 6*cOC), (int)(bugY - 6*sOC));
 
-    // Clock
-    u8g2_CompassAndClock.drawStr(xR-3, hY-rR+7, "12"); u8g2_CompassAndClock.drawStr(xR-2, hY+rR-2, "6");
-    u8g2_CompassAndClock.drawStr(xR+rR-6, hY+2, "3"); u8g2_CompassAndClock.drawStr(xR-rR+1, hY+2, "9");
+    // --- MISSION CLOCK (RIGHT) ---
+    u8g2_CompassAndClock.drawStr(xR-3, hY-rR+7, "12"); 
+    u8g2_CompassAndClock.drawStr(xR-2, hY+rR-2, "6");
+    u8g2_CompassAndClock.drawStr(xR+rR-6, hY+2, "3"); 
+    u8g2_CompassAndClock.drawStr(xR-rR+1, hY+2, "9");
     u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad)));
     u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad)));
 
-    // 3. PUSH TO SCREEN
     u8g2_CompassAndClock.sendBuffer();
-
-    // Wait for the next precise interval
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
