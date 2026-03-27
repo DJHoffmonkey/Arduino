@@ -779,39 +779,42 @@ void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float r, float h
 }
 
 void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint32_t msTotal) {
-    // 1. LARGER FONT
+    // 1. LARGER FONT (5x7)
     canvas.setFont(u8g2_font_5x7_tr);
     
-    // Labels (Adjusted offsets for the larger font)
+    // Labels (Offsets adjusted for 5x7 width/height)
     canvas.drawStr(centerX - 5, centerY - 10, "10"); 
     canvas.drawStr(centerX - 3, centerY + 16, "5");
     canvas.drawStr(centerX + 11, centerY + 3,  "2"); 
     canvas.drawStr(centerX - 18, centerY + 3,  "7");
 
-    // 2. DOT TICKS
+    // 2. DOT TICKS (Minimalist single pixels)
     for (int i = 0; i < 360; i += 36) { 
         float rad = (i - 90.0f) * (M_PI / 180.0f);
         canvas.drawPixel((int)(centerX + r * cosf(rad)), (int)(centerY + r * sinf(rad)));
     }
 
     // --- 3. MINUTES HAND (Thick, 10 Min Lap) ---
+    // 600,000ms = 10 mins. 360/600,000 = 0.0006 deg/ms
     float minMS = (float)(msTotal % 600000);
     float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
     float minTipX = centerX + (r * 0.75f) * cosf(minRad);
     float minTipY = centerY + (r * 0.75f) * sinf(minRad);
     
+    // Draw 2-pixel thick minute hand
     float pX = -sinf(minRad), pY = cosf(minRad);
     for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
         drawSafeLine(canvas, centerX + (pX * i), centerY + (pY * i), minTipX + (pX * i), minTipY + (pY * i));
     }
 
     // --- 4. SECONDS HAND (Thin, 1 Min Lap, LONGER) ---
+    // 60,000ms = 1 min. 360/60,000 = 0.006 deg/ms
     float secMS = (float)(msTotal % 60000);
     float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
     
-    // Increased length to 60% of radius (approx 10 pixels)
-    float secTipX = centerX + (r * 0.60f) * cosf(secRad);
-    float secTipY = centerY + (r * 0.60f) * sinf(secRad);
+    // Tip extended to 65% of radius for better visibility
+    float secTipX = centerX + (r * 0.65f) * cosf(secRad);
+    float secTipY = centerY + (r * 0.65f) * sinf(secRad);
     
     drawSafeLine(canvas, centerX, centerY, secTipX, secTipY);
 
