@@ -43,7 +43,7 @@ TFT_eSprite ucSprite = TFT_eSprite(&tft);
 // Compass display is wide (128x64)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 // Engine display is tall (64x128)
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -672,7 +672,11 @@ void loop() {
     vsi = cos(t * 0.2) * 400.0; // Match cm/s scale
     heading += 0.2;
     if (heading >= 360) heading = 0;
-    vBat = 12.2;
+    vBat = 16.8; // Simulating a 4S pack for the Tacho math
+    // Simulating throttle cycling from 0 to 100% every 12 seconds
+    sharedThrottle = (sin(t * 0.5) * 0.5) + 0.5; 
+    // Simulating fuel draining slowly over time, then resetting
+    sharedBattery = 100.0 - (fmod(t, 60.0) * 1.66);
   } else {
     updateMSP();
   }
@@ -689,252 +693,235 @@ void loop() {
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
 
-// --- 1. COMPASS FRAME FUNCTION (STATIC LABELS, TICKS, & HUB) ---
-void drawCompassFrame(U8G2 &canvas, float compassCenterX, float verticalCenterY) {
-  canvas.setFont(u8g2_font_4x6_tr);
-  canvas.drawStr(20, 10, "N");
-  canvas.drawStr(20, 62, "S");
-  canvas.drawStr(44, 34, "E");
-  canvas.drawStr(2, 34, "W");
-
-  // DRAW THE CENTER HUB PIN
-  // This anchors the needles visually. 
-  // A 3x3 box centered on the pivot point.
-  canvas.drawBox((int)compassCenterX - 1, (int)verticalCenterY - 1, 3, 3);
-
-  const float compassOuterRadius = 24.0f;
-  for (int tickAngle = 30; tickAngle < 360; tickAngle += 30) {
-      if (tickAngle % 90 == 0) continue; 
-      float tickRadians = (tickAngle - 90.0f) * (PI / 180.0f);
-      canvas.drawLine(
-          (int)(compassCenterX + compassOuterRadius * cosf(tickRadians)), 
-          (int)(verticalCenterY + compassOuterRadius * sinf(tickRadians)), 
-          (int)(compassCenterX + (compassOuterRadius - 3.0f) * cosf(tickRadians)), 
-          (int)(verticalCenterY + (compassOuterRadius - 3.0f) * sinf(tickRadians))
-      );
-  }
+// --- HELPER: PREVENT COORDINATE WRAPPING GLITCH ---
+void drawSafeLine(U8G2 &canvas, float x1, float y1, float x2, float y2) {
+    canvas.drawLine((int)constrain(x1, 0, 127), (int)constrain(y1, 0, 63), 
+                    (int)constrain(x2, 0, 127), (int)constrain(y2, 0, 63));
 }
 
-// --- 2. HOME NEEDLE FUNCTION (2-PIXEL THICK WITH T-HEAD) ---
-void drawHomeNeedle(U8G2 &canvas, float compassCenterX, float verticalCenterY, float destinationHomeHeading) {
-  float homeRadians = (destinationHomeHeading - 90.0f) * (PI / 180.0f);
-  float cosHome = cosf(homeRadians);
-  float sinHome = sinf(homeRadians);
+// --- 1. COMPASS FRAME (SHRUNK 4px DIAMETER) ---
+void drawCompassFrame(U8G2 &canvas, float centerX, float centerY) {
+    canvas.setFont(u8g2_font_4x6_tr);
+    // Labels nudged to match Radius 22
+    canvas.drawStr(centerX - 2, centerY - 24, "N");
+    canvas.drawStr(centerX - 2, centerY + 29, "S");
+    canvas.drawStr(centerX + 24, centerY + 2, "E");
+    canvas.drawStr(centerX - 29, centerY + 2, "W");
 
-  // Tip at radius 22
-  float tipX = compassCenterX + 22.0f * cosHome;
-  float tipY = verticalCenterY + 22.0f * sinHome;
+    // 3x3 Hub Pin
+    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
 
-  // Perpendicular vector for thickness and T-Head
-  float perpX = -sinHome;
-  float perpY = cosHome;
-
-  // 1. DRAW 2-PIXEL THICK BODY
-  // Draw two lines side-by-side from center to tip
-  for (int thickness = 0; thickness <= 1; thickness++) {
-      float shiftX = thickness * perpX * 0.5f;
-      float shiftY = thickness * perpY * 0.5f;
-      
-      canvas.drawLine(
-          (int)(compassCenterX + shiftX), (int)(verticalCenterY + shiftY), 
-          (int)(tipX + shiftX), (int)(tipY + shiftY)
-      );
-  }
-
-  // 2. DRAW THE T-HEAD CAP (Increased to 7px wide to match thicker body)
-  float capWidth = 3.5f; 
-  int capRightX = (int)(tipX + (perpX * capWidth));
-  int capRightY = (int)(tipY + (perpY * capWidth));
-  int capLeftX  = (int)(tipX - (perpX * capWidth));
-  int capLeftY  = (int)(tipY - (perpY * capWidth));
-  
-  canvas.drawLine(capLeftX, capLeftY, capRightX, capRightY);
-
-  // 3. DRAW THE TAIL (2-Pixels thick, 8px long)
-  for (int thickness = 0; thickness <= 1; thickness++) {
-      float shiftX = thickness * perpX * 0.5f;
-      float shiftY = thickness * perpY * 0.5f;
-      
-      canvas.drawLine(
-          (int)(compassCenterX + shiftX), (int)(verticalCenterY + shiftY), 
-          (int)(compassCenterX - 8.0f * cosHome + shiftX), (int)(verticalCenterY - 8.0f * sinHome + shiftY)
-      );
-  }
+    const float rOut = 22.0f; 
+    for (int angle = 30; angle < 360; angle += 30) {
+        if (angle % 90 == 0) continue; 
+        float rad = (angle - 90.0f) * (M_PI / 180.0f);
+        drawSafeLine(canvas, 
+            centerX + rOut * cosf(rad), centerY + rOut * sinf(rad),
+            centerX + (rOut - 3.0f) * cosf(rad), centerY + (rOut - 3.0f) * sinf(rad)
+        );
+    }
 }
 
-void drawHeadingNeedle(U8G2 &canvas, float compassCenterX, float verticalCenterY, float currentHeading) {
-    float headingRadians = (currentHeading - 90.0f) * (PI / 180.0f);
-    float cosH = cosf(headingRadians);
-    float sinH = sinf(headingRadians);
+// --- 2. HOME NEEDLE (2-PIXEL THICK WITH T-HEAD) ---
+void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float heading) {
+    float rad = (heading - 90.0f) * (M_PI / 180.0f);
+    float cosH = cosf(rad), sinH = sinf(rad);
+    float pX = -sinH, pY = cosH;
 
-    // Precise gap between the two single-pixel rails
-    float gapX = -sinH * 2.5f;
-    float gapY = cosH * 2.5f;
+    // Needle Tip at Radius 19 (Safety gap from 22 frame)
+    float tipX = centerX + 19.0f * cosH;
+    float tipY = centerY + 19.0f * sinH;
 
-    // --- DRAW THE TWO SINGLE-PIXEL RAILS ---
+    for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
+        drawSafeLine(canvas, centerX + (pX * i), centerY + (pY * i), tipX + (pX * i), tipY + (pY * i));
+        drawSafeLine(canvas, centerX + (pX * i), centerY + (pY * i), centerX - 7.0f * cosH + (pX * i), centerY - 7.0f * sinH + (pY * i));
+    }
+    // T-Head Cap
+    drawSafeLine(canvas, tipX + pX * 3.5f, tipY + pY * 3.5f, tipX - pX * 3.5f, tipY - pY * 3.5f);
+}
+
+// --- 3. HEADING NEEDLE (DOUBLE RAIL STYLE) ---
+void drawHeadingNeedle(U8G2 &canvas, float centerX, float centerY, float heading) {
+    float rad = (heading - 90.0f) * (M_PI / 180.0f);
+    float cosH = cosf(rad), sinH = sinf(rad);
+    float gX = -sinH * 2.5f, gY = cosH * 2.5f; 
+
+    // Body Rails (Radius 19)
     for (int side = -1; side <= 1; side += 2) {
-        float rX = gapX * side;
-        float rY = gapY * side;
+        float rX = gX * side, rY = gY * side;
+        drawSafeLine(canvas, centerX - 19 * cosH + rX, centerY - 19 * sinH + rY, centerX + 19 * cosH + rX, centerY + 19 * sinH + rY);
+    }
+    // Arrow Head (Tips at 22, base at 19)
+    float tipX = centerX + 22 * cosH, tipY = centerY + 22 * sinH;
+    drawSafeLine(canvas, centerX + 19 * cosH + gX, centerY + 19 * sinH + gY, tipX, tipY);
+    drawSafeLine(canvas, centerX + 19 * cosH - gX, centerY + 19 * sinH - gY, tipX, tipY);
+    // Rear Cap
+    drawSafeLine(canvas, centerX - 19 * cosH + gX, centerY - 19 * sinH + gY, centerX - 19 * cosH - gX, centerY - 19 * sinH - gY);
+}
 
-        // Calculate points with floats, then constrain and cast to int
-        int xStart = (int)constrain(compassCenterX - 22*cosH + rX, -1, 129);
-        int yStart = (int)constrain(verticalCenterY - 22*sinH + rY, -1, 65);
-        int xEnd   = (int)constrain(compassCenterX + 22*cosH + rX, -1, 129);
-        int yEnd   = (int)constrain(verticalCenterY + 22*sinH + rY, -1, 65);
-
-        canvas.drawLine(xStart, yStart, xEnd, yEnd);
+void drawMissionClock(U8G2 &canvas, float centerX, float centerY, uint32_t secondsTotal) {
+    // 1. TICKS ONLY (Radius 22.0)
+    for (int i = 0; i < 360; i += 30) {
+        float rad = (i - 90.0f) * (M_PI / 180.0f);
+        int tickLen = (i % 90 == 0) ? 5 : 3;
+        drawSafeLine(canvas, 
+            centerX + 22.0f * cosf(rad), centerY + 22.0f * sinf(rad),
+            centerX + (22.0f - tickLen) * cosf(rad), centerY + (22.0f - tickLen) * sinf(rad)
+        );
     }
 
-    // --- DRAW THE DIRECTIONAL ARROWHEAD ---
-    int arrowTipX = (int)constrain(compassCenterX + 26*cosH, -1, 129);
-    int arrowTipY = (int)constrain(verticalCenterY + 26*sinH, -1, 65);
+    // 2. THE NEEDLE (1 hour = 360 degrees)
+    float mins = (float)(secondsTotal % 3600) / 60.0f; 
+    float needleRad = (mins * 6.0f - 90.0f) * (M_PI / 180.0f);
     
-    int r1TipX = (int)constrain(compassCenterX + 22*cosH + gapX, -1, 129);
-    int r1TipY = (int)constrain(verticalCenterY + 22*sinH + gapY, -1, 65);
-    int r2TipX = (int)constrain(compassCenterX + 22*cosH - gapX, -1, 129);
-    int r2TipY = (int)constrain(verticalCenterY + 22*sinH - gapY, -1, 65);
+    // Define the trig values for the needle direction
+    float nCos = cosf(needleRad);
+    float nSin = sinf(needleRad);
+    
+    // Needle Tip at Radius 18
+    float tipX = centerX + 18.0f * nCos;
+    float tipY = centerY + 18.0f * nSin;
 
-    canvas.drawLine(r1TipX, r1TipY, arrowTipX, arrowTipY);
-    canvas.drawLine(r2TipX, r2TipY, arrowTipX, arrowTipY);
+    // 3. DRAW THE NEEDLE (2-pixel thick style)
+    float pX = -nSin; // Perpendicular vector
+    float pY = nCos;
 
-    // --- DRAW THE REAR CAP ---
-    int r1TailX = (int)constrain(compassCenterX - 22*cosH + gapX, -1, 129);
-    int r1TailY = (int)constrain(verticalCenterY - 22*sinH + gapY, -1, 65);
-    int r2TailX = (int)constrain(compassCenterX - 22*cosH - gapX, -1, 129);
-    int r2TailY = (int)constrain(verticalCenterY - 22*sinH - gapY, -1, 65);
+    for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
+        drawSafeLine(canvas, 
+            centerX + (pX * i), centerY + (pY * i), 
+            tipX + (pX * i), tipY + (pY * i)
+        );
+    }
 
-    canvas.drawLine(r1TailX, r1TailY, r2TailX, r2TailY);
+    // 4. CENTER HUB
+    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
 }
 
-void drawMissionClock(U8G2 &canvas, float clockCenterX, float verticalCenterY, uint32_t elapsedSeconds) {
-  canvas.setFont(u8g2_font_4x6_tr);
-  canvas.drawStr(77, 18, "12"); 
-  canvas.drawStr(78, 55, "6");
-  canvas.drawStr(95, 34, "3"); 
-  canvas.drawStr(63, 34, "9");
-
-  // DRAW THE CENTER HUB PIN (3x3 Box)
-  canvas.drawBox((int)clockCenterX - 1, (int)verticalCenterY - 1, 3, 3);
-
-  // Calculate hand angles
-  float minutesHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)((elapsedSeconds / 60) % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
-  float secondsHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)(elapsedSeconds % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
-
-  // --- DRAW MINUTES HAND (Shorter: 13px) ---
-  int minEndX = (int)constrain(clockCenterX + 13.0f * cosf(minutesHandRadians), 0, 127);
-  int minEndY = (int)constrain(verticalCenterY + 13.0f * sinf(minutesHandRadians), 0, 63);
-  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, minEndX, minEndY);
-
-  // --- DRAW SECONDS HAND (Longer: 17px) ---
-  int secEndX = (int)constrain(clockCenterX + 17.0f * cosf(secondsHandRadians), 0, 127);
-  int secEndY = (int)constrain(verticalCenterY + 17.0f * sinf(secondsHandRadians), 0, 63);
-  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, secEndX, secEndY);
-}
 
 void drawTacho(U8G2 &canvas, float centerX, float centerY, float rpm, float maxRpm) {
-    canvas.setFont(u8g2_font_4x6_tr);
-    
-    // Sweep: 240 degrees centered at the top
+    canvas.setFont(u8g2_font_u8glib_4_tf); 
+
     for (int i = 0; i <= 10; i++) {
-        float angle = 210.0f - (i * 24.0f); 
-        float rad = (angle - 90.0f) * (M_PI / 180.0f); // -90 aligns R1 to "Up"
+        float angle = 225.0f - (i * 27.0f); 
+        float rad = (angle - 90.0f) * (M_PI / 180.0f);
         
-        int xOuter = (int)(centerX + 24 * cosf(rad));
-        int yOuter = (int)(centerY + 24 * sinf(rad));
-        int xInner = (int)(centerX + (i % 2 == 0 ? 19 : 21) * cosf(rad));
-        int yInner = (int)(centerY + (i % 2 == 0 ? 19 : 21) * sinf(rad));
-        canvas.drawLine(xOuter, yOuter, xInner, yInner);
+        int rOut = 23, rIn = (i % 2 == 0) ? 18 : 20; 
+        canvas.drawLine((int)(centerX + rOut * cosf(rad)), (int)(centerY + rOut * sinf(rad)), 
+                        (int)(centerX + rIn * cosf(rad)), (int)(centerY + rIn * sinf(rad)));
+
+        // Radial Number Placement (10, 30, 50, 70, 90)
+        if (i == 1 || i == 3 || i == 5 || i == 7 || i == 9) {
+            char buf[3]; sprintf(buf, "%d", i * 10);
+            int tx = (int)(centerX + 11 * cosf(rad));
+            int ty = (int)(centerY + 11 * sinf(rad));
+            canvas.drawStr(tx - 3, ty + 2, buf);
+        }
     }
 
-    float needleRad = (210.0f - ((rpm / maxRpm) * 240.0f) - 90.0f) * (M_PI / 180.0f);
-    canvas.drawLine((int)centerX, (int)centerY, (int)(centerX + 22 * cosf(needleRad)), (int)(centerY + 22 * sinf(needleRad)));
-    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
+    // TAPERED NEEDLE
+    float needleRad = (225.0f - ((rpm / 10000.0f) * 270.0f) - 90.0f) * (M_PI / 180.0f);
+    int tipX = (int)(centerX + 17 * cosf(needleRad));
+    int tipY = (int)(centerY + 17 * sinf(needleRad));
+    
+    canvas.drawLine((int)centerX, (int)centerY, tipX, tipY); 
+    canvas.drawLine((int)(centerX + 1 * cosf(needleRad + 1.57f)), (int)(centerY + 1 * sinf(needleRad + 1.57f)), tipX, tipY);
+    canvas.drawLine((int)(centerX + 1 * cosf(needleRad - 1.57f)), (int)(centerY + 1 * sinf(needleRad - 1.57f)), tipX, tipY);
+    canvas.drawDisc((int)centerX, (int)centerY, 2);
 }
 
 void drawFuelGauge(U8G2 &canvas, float centerX, float centerY, float percent) {
-    canvas.setFont(u8g2_font_4x6_tr);
-    canvas.drawStr((int)centerX - 22, (int)centerY + 10, "E");
-    canvas.drawStr((int)centerX + 18, (int)centerY + 10, "F");
-    canvas.drawStr((int)centerX - 10, (int)centerY - 15, "FUEL");
-
+    // 1. Ticks
     for (int i = 0; i <= 4; i++) {
-        float angle = 150.0f - (i * 30.0f); 
+        float angle = 210.0f - (i * 60.0f); 
         float rad = (angle - 90.0f) * (M_PI / 180.0f);
-        canvas.drawLine((int)(centerX + 24 * cosf(rad)), (int)(centerY + 24 * sinf(rad)), 
-                        (int)(centerX + 20 * cosf(rad)), (int)(centerY + 20 * sinf(rad)));
+        canvas.drawLine((int)(centerX + 23 * cosf(rad)), (int)(centerY + 23 * sinf(rad)), 
+                        (int)(centerX + 19 * cosf(rad)), (int)(centerY + 19 * sinf(rad)));
     }
 
-    float fuelRad = (150.0f - ((percent / 100.0f) * 120.0f) - 90.0f) * (M_PI / 180.0f);
-    canvas.drawLine((int)centerX, (int)centerY, (int)(centerX + 22 * cosf(fuelRad)), (int)(centerY + 22 * sinf(fuelRad)));
-    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
+    // 2. BIG RADIAL LABELS (E, 1/2, F)
+    canvas.setFont(u8g2_font_5x7_tr); 
+    const char* labels[] = {"E", "", "1/2", "", "F"};
+    for (int i = 0; i <= 4; i++) {
+        if (strlen(labels[i]) > 0) {
+            float angle = 210.0f - (i * 60.0f);
+            float rad = (angle - 90.0f) * (M_PI / 180.0f);
+            int tx = (int)(centerX + 10 * cosf(rad)); // Radius 10 to keep big font inside
+            int ty = (int)(centerY + 10 * sinf(rad));
+            int xOff = (i == 2) ? 7 : 3; 
+            canvas.drawStr(tx - xOff, ty + 3, labels[i]);
+        }
+    }
+
+    // 3. TAPERED NEEDLE (Matching Tacho)
+    float fuelRad = (210.0f - ((percent / 100.0f) * 240.0f) - 90.0f) * (M_PI / 180.0f);
+    int fTipX = (int)(centerX + 17 * cosf(fuelRad));
+    int fTipY = (int)(centerY + 17 * sinf(fuelRad));
+    
+    canvas.drawLine((int)centerX, (int)centerY, fTipX, fTipY); 
+    canvas.drawLine((int)(centerX + 1 * cosf(fuelRad + 1.57f)), (int)(centerY + 1 * sinf(fuelRad + 1.57f)), fTipX, fTipY);
+    canvas.drawLine((int)(centerX + 1 * cosf(fuelRad - 1.57f)), (int)(centerY + 1 * sinf(fuelRad - 1.57f)), fTipX, fTipY);
+    canvas.drawDisc((int)centerX, (int)centerY, 2);
 }
 
-
 void updateCompassAndClockDisplay() {
-    static float visualHeading = 0.0f;
-    static float visualHome = 0.0f;
-    const float smoothingAlpha = 0.15f; 
-    static bool wasArmed = false; 
+  static float visualHeading = 0.0f;
+  static float visualHome = 0.0f;
+  const float smoothingAlpha = 0.15f; 
+  static bool wasArmed = false; 
 
-    // 1. Data Logic
-    float targetHeading = sharedHeading;
-    float targetHome = (float)dirToHome;
-    
-    float deltaHeading = targetHeading - visualHeading;
-    if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
-    if (deltaHeading < -180.0f) deltaHeading += 360.0f;
-    visualHeading += deltaHeading * smoothingAlpha;
+  // 1. Data Logic
+  float targetHeading = sharedHeading;
+  float targetHome = (float)dirToHome;
+  
+  float deltaHeading = targetHeading - visualHeading;
+  if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
+  if (deltaHeading < -180.0f) deltaHeading += 360.0f;
+  visualHeading += deltaHeading * smoothingAlpha;
 
-    float deltaHome = targetHome - visualHome;
-    if (deltaHome > 180.0f)  deltaHome -= 360.0f;
-    if (deltaHome < -180.0f) deltaHome += 360.0f;
-    visualHome += deltaHome * smoothingAlpha;
+  float deltaHome = targetHome - visualHome;
+  if (deltaHome > 180.0f)  deltaHome -= 360.0f;
+  if (deltaHome < -180.0f) deltaHome += 360.0f;
+  visualHome += deltaHome * smoothingAlpha;
 
-    if (isArmed) {
-        if (!wasArmed) { missionStartTime = millis(); wasArmed = true; }
-        finalFlightTime = (millis() - missionStartTime) / 1000;
-    } else { wasArmed = false; }
+  if (isArmed) {
+      if (!wasArmed) { missionStartTime = millis(); wasArmed = true; }
+      finalFlightTime = (millis() - missionStartTime) / 1000;
+  } else { wasArmed = false; }
 
-    // 2. Draw & Send
-    u8g2_CompassAndClock.clearBuffer();
-    drawCompassFrame(u8g2_CompassAndClock, 22.0f, 32.0f);
-    drawHomeNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHome);
-    drawHeadingNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHeading);
-    drawMissionClock(u8g2_CompassAndClock, 80.0f, 32.0f, finalFlightTime);
-    u8g2_CompassAndClock.sendBuffer(); 
+  // 2. Draw & Send
+  u8g2_CompassAndClock.clearBuffer();
+  drawCompassFrame(u8g2_CompassAndClock, 22.0f, 32.0f);
+  drawHomeNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHome);
+  drawHeadingNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHeading);
+  drawMissionClock(u8g2_CompassAndClock, 80.0f, 32.0f, finalFlightTime);
+  u8g2_CompassAndClock.sendBuffer(); 
 }
 
 void updateEngineDisplay() {
-    static float visualRpm = 0.0f;
-    static float visualFuel = 100.0f;
-    const float motorKv = 580.0f; 
-    const float alpha = 0.12f;
+  static float visualRpm = 0.0f;
+  static float visualFuel = 100.0f;
+  const float motorKv = 580.0f; 
+  const float alpha = 0.12f;
 
-    // 1. Logic
-    float targetRpm = motorKv * vBat * sharedThrottle; 
-    float maxScaleRpm = (vBat > 18.0f) ? 16000.0f : 10000.0f;
-    visualRpm += (targetRpm - visualRpm) * alpha;
-    visualFuel += (sharedBattery - visualFuel) * alpha;
+  // 1. Data Processing
+  float targetRpm = motorKv * vBat * sharedThrottle; 
+  float maxScaleRpm = (vBat > 18.0f) ? 16000.0f : 10000.0f;
+  visualRpm += (targetRpm - visualRpm) * alpha;
+  visualFuel += (sharedBattery - visualFuel) * alpha;
 
-    // 2. Draw & Send
-    u8g2_Engine.clearBuffer();
+  // 2. Render
+  u8g2_Engine.clearBuffer();
 
-    // PORTRAIT STACK (64 wide x 128 high)
-    const float centerX = 32.0f;
-    const float topY = 32.0f;    // Tacho at top
-    const float bottomY = 96.0f; // Fuel at bottom
+  const float farLeftX = 24.0f; // Minimal clearance for 23r dial
+  const float topY = 24.0f;
+  const float bottomY = 101.0f;
 
-    drawTacho(u8g2_Engine, centerX, topY, visualRpm, maxScaleRpm);
-    drawFuelGauge(u8g2_Engine, centerX, bottomY, visualFuel);
-    
-    // Digital RPM in the center gap
-    u8g2_Engine.setFont(u8g2_font_4x6_tr);
-    u8g2_Engine.setCursor(18, 68); 
-    u8g2_Engine.print((int)visualRpm);
-    u8g2_Engine.print(" RPM");
+  drawTacho(u8g2_Engine, farLeftX, topY, visualRpm, 10000.0f);
+  drawFuelGauge(u8g2_Engine, 20.0f, bottomY, visualFuel);
 
-    u8g2_Engine.sendBuffer();
+  u8g2_Engine.sendBuffer();
 }
+
 
 void oled_MasterTask(void * pvParameters) {
     for(;;) {
