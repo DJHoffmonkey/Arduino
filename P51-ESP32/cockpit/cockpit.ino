@@ -143,7 +143,7 @@ bool parseMSP() {
   isBenchMode = false;
 
   // --- RC DATA (GEAR, FLAPS, ARMING) ---
-  if (cmd == 105) { // MSP_RC
+  if (cmd == MSP_RC) { // MSP_RC
     // 1. ARMING (Channel 14)
     int armIdx = (CH_ARM - 1) * 2; // Byte Index 26
     if (size >= (armIdx + 2)) {
@@ -184,7 +184,23 @@ bool parseMSP() {
       }
       flapPos = newFlapPos;    
     }
-    
+    // --- CORRECTED THROTTLE PARSE ---
+    // Your debug showed CH4 (Index 6) is the moving throttle stick.
+    int thrIdx = 6; // Channel 4 = (4-1) * 2
+    if (size >= (thrIdx + 2)) {
+        uint16_t tRaw = payload[thrIdx] | (payload[thrIdx + 1] << 8);
+        
+        // Normalize 1000-2000 to 0.0-1.0
+        // We use 1000.0f to ensure float division
+        sharedThrottle = (float)(tRaw - 1000) / 1000.0f;
+        
+        // Hard constraints
+        if (sharedThrottle < 0.0f) sharedThrottle = 0.0f;
+        if (sharedThrottle > 1.0f) sharedThrottle = 1.0f;
+        
+        // Optional: add a tiny deadzone for 988-1000 jitter
+        if (tRaw < 1010) sharedThrottle = 0.0f;
+    }
   }
   // --- ATTITUDE ---
   else if (cmd == MSP_ATTITUDE && size >= 6) {
@@ -196,7 +212,7 @@ bool parseMSP() {
   // --- ALTITUDE (V2 10-BYTE) ---
   else if (cmd == MSP_ALTITUDE && size >= 10) {
     int32_t estAlt  = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    vsi             = (int16_t)(payload[4] | (payload[5] << 8));
+    vsi = (int16_t)(payload[4] | (payload[5] << 8));
     int32_t baroAlt = (int32_t)(payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24));
     alt = (estAlt == 0) ? (baroAlt / 30.48) : (estAlt / 30.48);
 
@@ -206,25 +222,31 @@ bool parseMSP() {
     }
   }
 
-  // --- BATTERY ---
-  else if (cmd == MSP_ANALOG && size >= 1) {
-    vBat = payload[0] / 10.0;
-    if (isDebug && abs(vBat - lastVBatLog) > 0.05) {
-       console.printf("DEBUG -> BATTERY: %.2fV\n", vBat);
-       lastVBatLog = vBat;
+  // --- BATTERY (MSP_ANALOG) ---
+  else if (cmd == MSP_ANALOG && size >= 1) { 
+    vBat = (payload[0] / 10.0f); // 16.4V
+    
+    // ignore payload[4] because it's returning Cell Count (3 or 4) instead of %
+    // Manually calculate 4S percentage: 14.0V to 16.8V
+    float voltPct = ((vBat - 14.0f) / 2.8f) * 100.0f;
+    sharedBattery = constrain(voltPct, 0.0f, 100.0f);
+
+    if (isDebug) {
+      // This will now show ~86% instead of 3%
+      console.printf("DEBUG -> VBAT: %.2fV | FUEL: %.0f%%\n", vBat, sharedBattery);
     }
   }
   else if (cmd == 106) { // MSP_RAW_GPS
-      if (size >= 16) {
-          uint8_t fixType = payload[0];
-          uint8_t numSats = payload[1];
-          
-          // 3. Calculate Speed (Byte 12-13 as confirmed)
-          uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
-          airSpeed = groundSpeedCMS * 0.0223694;
-          if (airSpeed < 1.5) airSpeed = 0;
+    if (size >= 16) {
+        uint8_t fixType = payload[0];
+        uint8_t numSats = payload[1];
+        
+        // 3. Calculate Speed (Byte 12-13 as confirmed)
+        uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
+        airSpeed = groundSpeedCMS * 0.0223694;
+        if (airSpeed < 1.5) airSpeed = 0;
 
-      }
+    }
   }
   else if (cmd == MSP_NAV_STATUS) { 
       if (size >= 6) {
@@ -748,53 +770,54 @@ void drawCompassFrame(U8G2 &canvas, float centerX, float centerY, float r) {
 void drawHeadingNeedle(U8G2 &canvas, float centerX, float centerY, float r, float heading) {
     float rad = (heading - 90.0f) * (M_PI / 180.0f);
     float cosH = cosf(rad), sinH = sinf(rad);
-    float gX = -sinH * 2.5f, gY = cosH * 2.5f; 
+    
+    // Width scales with radius (approx 10% of r)
+    float width = r * 0.10f;
+    float gX = -sinH * width, gY = cosH * width; 
 
-    // Arrow Tip at 75% of radius (stays inside N/E/S/W)
     float tipR = r * 0.75f;
-    // Body Rails at 60% of radius
     float bodyR = r * 0.60f;
 
+    // Draw the parallel "rails"
     for (int side = -1; side <= 1; side += 2) {
         float rX = gX * side, rY = gY * side;
-        drawSafeLine(canvas, centerX - bodyR * cosH + rX, centerY - bodyR * sinH + rY, centerX + bodyR * cosH + rX, centerY + bodyR * sinH + rY);
+        drawSafeLine(canvas, centerX - bodyR * cosH + rX, centerY - bodyR * sinH + rY, 
+                            centerX + bodyR * cosH + rX, centerY + bodyR * sinH + rY);
     }
 
+    // Draw the Arrow Head
     float tipX = centerX + tipR * cosH, tipY = centerY + tipR * sinH;
     drawSafeLine(canvas, centerX + bodyR * cosH + gX, centerY + bodyR * sinH + gY, tipX, tipY);
     drawSafeLine(canvas, centerX + bodyR * cosH - gX, centerY + bodyR * sinH - gY, tipX, tipY);
-    drawSafeLine(canvas, centerX - bodyR * cosH + gX, centerY - bodyR * sinH + gY, centerX - bodyR * cosH - gX, centerY - bodyR * sinH - gY);
+    
+    // Draw the Base Cap
+    drawSafeLine(canvas, centerX - bodyR * cosH + gX, centerY - bodyR * sinH + gY, 
+                        centerX - bodyR * cosH - gX, centerY - bodyR * sinH - gY);
 }
 
-// --- 2. HOME NEEDLE (PARAMETRIC & 2-PIXEL THICK) ---
 void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float r, float heading) {
     float rad = (heading - 90.0f) * (M_PI / 180.0f);
-    float cosH = cosf(rad);
-    float sinH = sinf(rad);
-    float pX = -sinH; // Perpendicular vector for thickness
-    float pY = cosH;
+    float cosH = cosf(rad), sinH = sinf(rad);
+    float pX = -sinH, pY = cosH;
 
-    // Tip: Set at 65% of dial radius to stay nested inside Heading needle
     float tipR = r * 0.65f;
+    float tailR = r * 0.30f;
     float tipX = centerX + tipR * cosH;
     float tipY = centerY + tipR * sinH;
 
-    // 1. DRAW 2-PIXEL THICK BODY & TAIL
-    // Tail length is 30% of dial radius
-    float tailR = r * 0.30f;
-    
-    for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
-        float shiftX = i * pX;
-        float shiftY = i * pY;
+    // Thickness scales: 1px for small dials, 2px+ for larger ones
+    float thickness = max(1.0f, r * 0.05f); 
+    float startOffset = -(thickness / 2.0f);
+
+    for (float i = 0; i < thickness; i += 1.0f) {
+        float shiftX = (startOffset + i) * pX;
+        float shiftY = (startOffset + i) * pY;
         
-        // Body line
         drawSafeLine(canvas, centerX + shiftX, centerY + shiftY, tipX + shiftX, tipY + shiftY);
-        // Tail line
         drawSafeLine(canvas, centerX + shiftX, centerY + shiftY, centerX - tailR * cosH + shiftX, centerY - tailR * sinH + shiftY);
     }
 
-    // 2. DRAW THE T-HEAD CAP
-    // Cap width scales with dial size (approx 15% of radius)
+    // Cap width (T-bar) stays 15% of radius
     float capWidth = r * 0.15f; 
     drawSafeLine(canvas, tipX + (pX * capWidth), tipY + (pY * capWidth), 
                          tipX - (pX * capWidth), tipY - (pY * capWidth));
@@ -847,71 +870,113 @@ void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint3
     canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
 }
 
-
-void drawTacho(U8G2 &canvas, float centerX, float centerY, float rpm, float maxRpm) {
+void drawTacho(U8G2 &canvas, float centerX, float centerY, float r, float rpm, float maxRpm) {
     canvas.setFont(u8g2_font_u8glib_4_tf); 
 
+    // 1. DYNAMIC TICK MARKS
     for (int i = 0; i <= 10; i++) {
+        // 270 degree sweep (from 225 down to -45)
         float angle = 225.0f - (i * 27.0f); 
         float rad = (angle - 90.0f) * (M_PI / 180.0f);
         
-        int rOut = 23, rIn = (i % 2 == 0) ? 18 : 20; 
+        // Parametric radii
+        float rOut = r;
+        float rIn = (i % 2 == 0) ? (r * 0.78f) : (r * 0.87f); 
+        
+        // Ticks are static, so standard drawLine is fine here
         canvas.drawLine((int)(centerX + rOut * cosf(rad)), (int)(centerY + rOut * sinf(rad)), 
                         (int)(centerX + rIn * cosf(rad)), (int)(centerY + rIn * sinf(rad)));
 
-        // Radial Number Placement (10, 30, 50, 70, 90)
-        if (i == 1 || i == 3 || i == 5 || i == 7 || i == 9) {
-            char buf[3]; sprintf(buf, "%d", i * 10);
-            int tx = (int)(centerX + 11 * cosf(rad));
-            int ty = (int)(centerY + 11 * sinf(rad));
-            canvas.drawStr(tx - 3, ty + 2, buf);
+        // 2. PARAMETRIC NUMBER PLACEMENT
+        if (i % 2 != 0) { // i = 1, 3, 5, 7, 9
+            char buf[4]; 
+            // Scalable label: 10, 30, 50... or adjusted for maxRpm scale
+            sprintf(buf, "%d", (int)((maxRpm / 10.0f) * i / 100.0f)); 
+            
+            // Numbers placed at 50% of radius
+            float rText = r * 0.50f;
+            int tx = (int)(centerX + rText * cosf(rad));
+            int ty = (int)(centerY + rText * sinf(rad));
+            
+            // Center the text based on font width
+            int w = canvas.getStrWidth(buf);
+            canvas.drawStr(tx - (w / 2), ty + 2, buf);
         }
     }
 
-    // TAPERED NEEDLE
-    float needleRad = (225.0f - ((rpm / 10000.0f) * 270.0f) - 90.0f) * (M_PI / 180.0f);
-    int tipX = (int)(centerX + 17 * cosf(needleRad));
-    int tipY = (int)(centerY + 17 * sinf(needleRad));
+    // 3. PARAMETRIC TAPERED NEEDLE
+    // Calculate percentage of maxRpm (clamp to 0.0 - 1.0)
+    float rpmPct = rpm / maxRpm;
+    if (rpmPct > 1.0f) rpmPct = 1.0f;
+    if (rpmPct < 0.0f) rpmPct = 0.0f;
+
+    float needleRad = (225.0f - (rpmPct * 270.0f) - 90.0f) * (M_PI / 180.0f);
     
-    canvas.drawLine((int)centerX, (int)centerY, tipX, tipY); 
-    canvas.drawLine((int)(centerX + 1 * cosf(needleRad + 1.57f)), (int)(centerY + 1 * sinf(needleRad + 1.57f)), tipX, tipY);
-    canvas.drawLine((int)(centerX + 1 * cosf(needleRad - 1.57f)), (int)(centerY + 1 * sinf(needleRad - 1.57f)), tipX, tipY);
-    canvas.drawDisc((int)centerX, (int)centerY, 2);
+    // Needle tip at 75% of radius
+    float tipR = r * 0.75f;
+    float tipX = centerX + tipR * cosf(needleRad);
+    float tipY = centerY + tipR * sinf(needleRad);
+    
+    // Width of needle base scales with r
+    float baseWidth = max(1.0f, r * 0.08f);
+    float side1X = centerX + baseWidth * cosf(needleRad + 1.57f);
+    float side1Y = centerY + baseWidth * sinf(needleRad + 1.57f);
+    float side2X = centerX + baseWidth * cosf(needleRad - 1.57f);
+    float side2Y = centerY + baseWidth * sinf(needleRad - 1.57f);
+
+    // Use SafeLines for moving parts
+    drawSafeLine(canvas, centerX, centerY, tipX, tipY); 
+    drawSafeLine(canvas, side1X, side1Y, tipX, tipY);
+    drawSafeLine(canvas, side2X, side2Y, tipX, tipY);
+
+    // 4. CENTER DISC (Scales with radius)
+    canvas.drawDisc((int)centerX, (int)centerY, (int)(r * 0.12f));
 }
 
-void drawFuelGauge(U8G2 &canvas, float centerX, float centerY, float percent) {
-    // 1. Ticks
+void drawFuelGauge(U8G2 &canvas, float centerX, float centerY, float r, float percent) {
+    // 1. Ticks (Using your 23/19 ratio)
     for (int i = 0; i <= 4; i++) {
         float angle = 210.0f - (i * 60.0f); 
         float rad = (angle - 90.0f) * (M_PI / 180.0f);
-        canvas.drawLine((int)(centerX + 23 * cosf(rad)), (int)(centerY + 23 * sinf(rad)), 
-                        (int)(centerX + 19 * cosf(rad)), (int)(centerY + 19 * sinf(rad)));
+        
+        float rOut = r;          // Was 23
+        float rIn = r * 0.826f;  // Was 19 (19/23 = 0.826)
+        
+        canvas.drawLine((int)(centerX + rOut * cosf(rad)), (int)(centerY + rOut * sinf(rad)), 
+                        (int)(centerX + rIn * cosf(rad)), (int)(centerY + rIn * sinf(rad)));
     }
 
     // 2. BIG RADIAL LABELS (E, 1/2, F)
     canvas.setFont(u8g2_font_5x7_tr); 
     const char* labels[] = {"E", "", "1/2", "", "F"};
+    float rText = r * 0.435f; // Was 10 (10/23 = 0.435)
+
     for (int i = 0; i <= 4; i++) {
         if (strlen(labels[i]) > 0) {
             float angle = 210.0f - (i * 60.0f);
             float rad = (angle - 90.0f) * (M_PI / 180.0f);
-            int tx = (int)(centerX + 10 * cosf(rad)); // Radius 10 to keep big font inside
-            int ty = (int)(centerY + 10 * sinf(rad));
+            int tx = (int)(centerX + rText * cosf(rad));
+            int ty = (int)(centerY + rText * sinf(rad));
             int xOff = (i == 2) ? 7 : 3; 
             canvas.drawStr(tx - xOff, ty + 3, labels[i]);
         }
     }
 
-    // 3. TAPERED NEEDLE (Matching Tacho)
+    // 3. TAPERED NEEDLE (Matching your WORKING logic exactly)
     float fuelRad = (210.0f - ((percent / 100.0f) * 240.0f) - 90.0f) * (M_PI / 180.0f);
-    int fTipX = (int)(centerX + 17 * cosf(fuelRad));
-    int fTipY = (int)(centerY + 17 * sinf(fuelRad));
+    float tipR = r * 0.739f; // Was 17 (17/23 = 0.739)
+    int fTipX = (int)(centerX + tipR * cosf(fuelRad));
+    int fTipY = (int)(centerY + tipR * sinf(fuelRad));
     
+    // Using your exact 3-line structure
     canvas.drawLine((int)centerX, (int)centerY, fTipX, fTipY); 
     canvas.drawLine((int)(centerX + 1 * cosf(fuelRad + 1.57f)), (int)(centerY + 1 * sinf(fuelRad + 1.57f)), fTipX, fTipY);
     canvas.drawLine((int)(centerX + 1 * cosf(fuelRad - 1.57f)), (int)(centerY + 1 * sinf(fuelRad - 1.57f)), fTipX, fTipY);
-    canvas.drawDisc((int)centerX, (int)centerY, 2);
+    
+    // Center Disc (Was 2)
+    canvas.drawDisc((int)centerX, (int)centerY, (int)max(2.0f, r * 0.087f));
 }
+
 
 void updateCompassAndClockDisplay() {
   static float visualHeading = 0.0f;
@@ -980,9 +1045,10 @@ void updateEngineDisplay() {
   const float farLeftX = 24.0f; // Minimal clearance for 23r dial
   const float topY = 24.0f;
   const float bottomY = 101.0f;
+  const float gaugeRadius = 23.0f; // Parametric master size for this screen
 
-  drawTacho(u8g2_Engine, farLeftX, topY, visualRpm, 10000.0f);
-  drawFuelGauge(u8g2_Engine, 20.0f, bottomY, visualFuel);
+  drawTacho(u8g2_Engine, farLeftX, topY, gaugeRadius, visualRpm, maxScaleRpm);
+  drawFuelGauge(u8g2_Engine, 20.0f, bottomY, gaugeRadius, visualFuel);
 
   u8g2_Engine.sendBuffer();
 }
