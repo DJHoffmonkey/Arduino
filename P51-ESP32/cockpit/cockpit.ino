@@ -670,13 +670,18 @@ void loop() {
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
 
-// --- 1. COMPASS FRAME FUNCTION (STATIC LABELS & TICKS) ---
+// --- 1. COMPASS FRAME FUNCTION (STATIC LABELS, TICKS, & HUB) ---
 void drawP51CompassFrame(U8G2 &canvas, float compassCenterX, float verticalCenterY) {
   canvas.setFont(u8g2_font_4x6_tr);
   canvas.drawStr(20, 10, "N");
   canvas.drawStr(20, 62, "S");
   canvas.drawStr(44, 34, "E");
   canvas.drawStr(2, 34, "W");
+
+  // DRAW THE CENTER HUB PIN
+  // This anchors the needles visually. 
+  // A 3x3 box centered on the pivot point.
+  canvas.drawBox((int)compassCenterX - 1, (int)verticalCenterY - 1, 3, 3);
 
   const float compassOuterRadius = 24.0f;
   for (int tickAngle = 30; tickAngle < 360; tickAngle += 30) {
@@ -789,11 +794,22 @@ void drawMissionClock(U8G2 &canvas, float clockCenterX, float verticalCenterY, u
   canvas.drawStr(95, 34, "3"); 
   canvas.drawStr(63, 34, "9");
 
+  // DRAW THE CENTER HUB PIN (3x3 Box)
+  canvas.drawBox((int)clockCenterX - 1, (int)verticalCenterY - 1, 3, 3);
+
+  // Calculate hand angles
   float minutesHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)((elapsedSeconds / 60) % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
   float secondsHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)(elapsedSeconds % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
 
-  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, (int)(clockCenterX + 13.0f * cosf(minutesHandRadians)), (int)(verticalCenterY + 13.0f * sinf(minutesHandRadians)));
-  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, (int)(clockCenterX + 17.0f * cosf(secondsHandRadians)), (int)(verticalCenterY + 17.0f * sinf(secondsHandRadians)));
+  // --- DRAW MINUTES HAND (Shorter: 13px) ---
+  int minEndX = (int)constrain(clockCenterX + 13.0f * cosf(minutesHandRadians), 0, 127);
+  int minEndY = (int)constrain(verticalCenterY + 13.0f * sinf(minutesHandRadians), 0, 63);
+  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, minEndX, minEndY);
+
+  // --- DRAW SECONDS HAND (Longer: 17px) ---
+  int secEndX = (int)constrain(clockCenterX + 17.0f * cosf(secondsHandRadians), 0, 127);
+  int secEndY = (int)constrain(verticalCenterY + 17.0f * sinf(secondsHandRadians), 0, 63);
+  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, secEndX, secEndY);
 }
 
 void oled_CompassAndClockTaskCode(void * pvParameters) {
