@@ -787,16 +787,14 @@ void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint3
     canvas.drawStr(centerX + 11, centerY + 3,  "2"); 
     canvas.drawStr(centerX - 18, centerY + 3,  "7");
 
-    // 2. DOT TICKS (Only draw where numbers ARE NOT)
+    // 2. CLEAN DIAL DOTS (Skip positions 0, 90, 180, 270 degrees)
     for (int i = 0; i < 360; i += 36) { 
-        // Skip 0, 90, 180, 270 degrees to keep the numbers clear
         if (i == 0 || i == 90 || i == 180 || i == 270) continue;
-
         float rad = (i - 90.0f) * (M_PI / 180.0f);
         canvas.drawPixel((int)(centerX + r * cosf(rad)), (int)(centerY + r * sinf(rad)));
     }
 
-    // --- 3. MISSION MINUTES HAND (Thick - 10 Min Lap) ---
+    // --- 3. MISSION MINUTES HAND (Thick/Bold - 10 Min Lap) ---
     float minMS = (float)(msTotal % 600000);
     float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
     float minTipX = centerX + (r * 0.65f) * cosf(minRad);
@@ -807,14 +805,21 @@ void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint3
         drawSafeLine(canvas, centerX + (mPX * i), centerY + (mPY * i), minTipX + (mPX * i), minTipY + (mPY * i));
     }
 
-    // --- 4. SECONDS HAND (Thin/Long - 1 Min Lap) ---
-    uint32_t smoothSecMs = (msTotal / 100) * 100; 
+    // --- 4. BALANCED SECONDS NEEDLE (Thin/Long - 1 Min Lap) ---
+    uint32_t smoothSecMs = (msTotal / 100) * 100; // 10Hz "High-Beat"
     float secMS = (float)(smoothSecMs % 60000);
     float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
+    
+    // Tip (Forward)
     float secTipX = centerX + (r - 1.0f) * cosf(secRad);
     float secTipY = centerY + (r - 1.0f) * sinf(secRad);
     
-    drawSafeLine(canvas, centerX, centerY, secTipX, secTipY);
+    // Tail (Backward - approx 3-4 pixels)
+    float secTailX = centerX - (4.0f * cosf(secRad));
+    float secTailY = centerY - (4.0f * sinf(secRad));
+    
+    // Draw the full needle from Tail to Tip
+    drawSafeLine(canvas, secTailX, secTailY, secTipX, secTipY);
 
     // 5. CENTER HUB
     canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
