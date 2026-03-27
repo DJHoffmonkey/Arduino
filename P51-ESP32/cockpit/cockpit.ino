@@ -670,86 +670,202 @@ void loop() {
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
 
-void oled_CompassAndClockTaskCode(void * pvParameters) {
-  static bool wasArmed = false; 
-  const TickType_t xFrequency = pdMS_TO_TICKS(40); 
-  TickType_t xLastWakeTime = xTaskGetTickCount();
+// --- 1. COMPASS FRAME FUNCTION (STATIC LABELS & TICKS) ---
+void drawP51CompassFrame(U8G2 &canvas, float compassCenterX, float verticalCenterY) {
+  canvas.setFont(u8g2_font_4x6_tr);
+  canvas.drawStr(20, 10, "N");
+  canvas.drawStr(20, 62, "S");
+  canvas.drawStr(44, 34, "E");
+  canvas.drawStr(2, 34, "W");
 
-  for(;;) {
-    // 1. DATA SNAPSHOT
-    float h = sharedHeading;
-    float dH = (float)dirToHome;
-    bool armed = isArmed;
-    uint32_t now = millis();
+  const float compassOuterRadius = 24.0f;
+  for (int tickAngle = 30; tickAngle < 360; tickAngle += 30) {
+      if (tickAngle % 90 == 0) continue; 
+      float tickRadians = (tickAngle - 90.0f) * (PI / 180.0f);
+      canvas.drawLine(
+          (int)(compassCenterX + compassOuterRadius * cosf(tickRadians)), 
+          (int)(verticalCenterY + compassOuterRadius * sinf(tickRadians)), 
+          (int)(compassCenterX + (compassOuterRadius - 3.0f) * cosf(tickRadians)), 
+          (int)(verticalCenterY + (compassOuterRadius - 3.0f) * sinf(tickRadians))
+      );
+  }
+}
 
-    // Mission Timer Logic
-    if (armed) {
-      if (!wasArmed) { missionStartTime = now; wasArmed = true; }
-      finalFlightTime = (now - missionStartTime) / 1000;
-    } else { wasArmed = false; }
+// --- 2. HOME NEEDLE FUNCTION (2-PIXEL THICK WITH T-HEAD) ---
+void drawP51HomeNeedle(U8G2 &canvas, float compassCenterX, float verticalCenterY, float destinationHomeHeading) {
+  float homeRadians = (destinationHomeHeading - 90.0f) * (PI / 180.0f);
+  float cosHome = cosf(homeRadians);
+  float sinHome = sinf(homeRadians);
 
-    // --- COORDINATE SYSTEM (MOVED DOWN) ---
-    const int hY = 40; // Dropped from 32 to 40
-    const int xL = 22;
-    const int xR = 80;
-    const int rL = 24; 
-    const int rR = 19; 
+  // Tip at radius 22
+  float tipX = compassCenterX + 22.0f * cosHome;
+  float tipY = verticalCenterY + 22.0f * sinHome;
 
-    // --- MATH SECTION ---
-    float radH = (h - 90.0) * (PI / 180.0);
-    float cH = cos(radH), sH = sin(radH);
-    float cO = cos(radH + 1.5708), sO = sin(radH + 1.5708);
-    
-    float radC = (dH - 90.0) * (PI / 180.0);
-    float cOC = cos(radC + 1.5708), sOC = sin(radC + 1.5708);
-    // Home Bug center position
-    int bugX = (int)(xL + (rL-3) * cos(radC)); 
-    int bugY = (int)(hY + (rL-3) * sin(radC)); 
+  // Perpendicular vector for thickness and T-Head
+  float perpX = -sinHome;
+  float perpY = cosHome;
 
-    uint32_t s = finalFlightTime;
-    float mRad = (s == 0) ? -1.5708 : (((float)((s / 60) % 60) * 6.0) - 90.0) * (PI/180.0);
-    float sRad = (s == 0) ? -1.5708 : (((float)(s % 60) * 6.0) - 90.0) * (PI/180.0);
+  // 1. DRAW 2-PIXEL THICK BODY
+  // Draw two lines side-by-side from center to tip
+  for (int thickness = 0; thickness <= 1; thickness++) {
+      float shiftX = thickness * perpX * 0.5f;
+      float shiftY = thickness * perpY * 0.5f;
+      
+      canvas.drawLine(
+          (int)(compassCenterX + shiftX), (int)(verticalCenterY + shiftY), 
+          (int)(tipX + shiftX), (int)(tipY + shiftY)
+      );
+  }
 
-    // 2. DRAWING
-    u8g2_CompassAndClock.clearBuffer();
-    u8g2_CompassAndClock.setFont(u8g2_font_4x6_tr);
+  // 2. DRAW THE T-HEAD CAP (Increased to 7px wide to match thicker body)
+  float capWidth = 3.5f; 
+  int capRightX = (int)(tipX + (perpX * capWidth));
+  int capRightY = (int)(tipY + (perpY * capWidth));
+  int capLeftX  = (int)(tipX - (perpX * capWidth));
+  int capLeftY  = (int)(tipY - (perpY * capWidth));
+  
+  canvas.drawLine(capLeftX, capLeftY, capRightX, capRightY);
 
-    // --- COMPASS (LEFT) ---
-    u8g2_CompassAndClock.drawStr(xL-2, hY-rL+7, "N"); 
-    u8g2_CompassAndClock.drawStr(xL-2, hY+rL-2, "S"); 
-    u8g2_CompassAndClock.drawStr(xL+rL-7, hY+2, "E"); 
-    u8g2_CompassAndClock.drawStr(xL-rL+2, hY+2, "W"); 
+  // 3. DRAW THE TAIL (2-Pixels thick, 8px long)
+  for (int thickness = 0; thickness <= 1; thickness++) {
+      float shiftX = thickness * perpX * 0.5f;
+      float shiftY = thickness * perpY * 0.5f;
+      
+      canvas.drawLine(
+          (int)(compassCenterX + shiftX), (int)(verticalCenterY + shiftY), 
+          (int)(compassCenterX - 8.0f * cosHome + shiftX), (int)(verticalCenterY - 8.0f * sinHome + shiftY)
+      );
+  }
+}
 
-    for (int a = 30; a < 360; a += 30) {
-      if (a % 90 == 0) continue; 
-      float tR = (a - 90) * (PI/180.0);
-      u8g2_CompassAndClock.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-4)*cos(tR)), (int)(hY+(rL-4)*sin(tR)));
+void drawP51HeadingNeedle(U8G2 &canvas, float compassCenterX, float verticalCenterY, float currentHeading) {
+    float headingRadians = (currentHeading - 90.0f) * (PI / 180.0f);
+    float cosH = cosf(headingRadians);
+    float sinH = sinf(headingRadians);
+
+    // Precise gap between the two single-pixel rails
+    float gapX = -sinH * 2.5f;
+    float gapY = cosH * 2.5f;
+
+    // --- DRAW THE TWO SINGLE-PIXEL RAILS ---
+    for (int side = -1; side <= 1; side += 2) {
+        float rX = gapX * side;
+        float rY = gapY * side;
+
+        // Calculate points with floats, then constrain and cast to int
+        int xStart = (int)constrain(compassCenterX - 22*cosH + rX, -1, 129);
+        int yStart = (int)constrain(verticalCenterY - 22*sinH + rY, -1, 65);
+        int xEnd   = (int)constrain(compassCenterX + 22*cosH + rX, -1, 129);
+        int yEnd   = (int)constrain(verticalCenterY + 22*sinH + rY, -1, 65);
+
+        canvas.drawLine(xStart, yStart, xEnd, yEnd);
     }
 
-    // Double Rail Needle + FIXED MOVING FLAT CAP
-    float tipR = rL - 2; // Radius to the tip
-    int tx1 = (int)(xL + tipR*cH + 1.6*cO); int ty1 = (int)(hY + tipR*sH + 1.6*sO);
-    int tx2 = (int)(xL + tipR*cH - 1.6*cO); int ty2 = (int)(hY + tipR*sH - 1.6*sO);
-    int bx1 = (int)(xL + 2*cH + 1.6*cO);    int by1 = (int)(hY + 2*sH + 1.6*sO);
-    int bx2 = (int)(xL + 2*cH - 1.6*cO);    int by2 = (int)(hY + 2*sH - 1.6*sO);
+    // --- DRAW THE DIRECTIONAL ARROWHEAD ---
+    int arrowTipX = (int)constrain(compassCenterX + 26*cosH, -1, 129);
+    int arrowTipY = (int)constrain(verticalCenterY + 26*sinH, -1, 65);
+    
+    int r1TipX = (int)constrain(compassCenterX + 22*cosH + gapX, -1, 129);
+    int r1TipY = (int)constrain(verticalCenterY + 22*sinH + gapY, -1, 65);
+    int r2TipX = (int)constrain(compassCenterX + 22*cosH - gapX, -1, 129);
+    int r2TipY = (int)constrain(verticalCenterY + 22*sinH - gapY, -1, 65);
 
-    u8g2_CompassAndClock.drawLine(bx1, by1, tx1, ty1); 
-    u8g2_CompassAndClock.drawLine(bx2, by2, tx2, ty2); 
-    u8g2_CompassAndClock.drawLine(tx1, ty1, tx2, ty2); // This will now rotate correctly
-    u8g2_CompassAndClock.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH)); // Tail
+    canvas.drawLine(r1TipX, r1TipY, arrowTipX, arrowTipY);
+    canvas.drawLine(r2TipX, r2TipY, arrowTipX, arrowTipY);
 
-    // Home Bug
-    u8g2_CompassAndClock.drawLine((int)(bugX + 6*cOC), (int)(bugY + 6*sOC), (int)(bugX - 6*cOC), (int)(bugY - 6*sOC));
+    // --- DRAW THE REAR CAP ---
+    int r1TailX = (int)constrain(compassCenterX - 22*cosH + gapX, -1, 129);
+    int r1TailY = (int)constrain(verticalCenterY - 22*sinH + gapY, -1, 65);
+    int r2TailX = (int)constrain(compassCenterX - 22*cosH - gapX, -1, 129);
+    int r2TailY = (int)constrain(verticalCenterY - 22*sinH - gapY, -1, 65);
 
-    // --- MISSION CLOCK (RIGHT) ---
-    u8g2_CompassAndClock.drawStr(xR-3, hY-rR+7, "12"); 
-    u8g2_CompassAndClock.drawStr(xR-2, hY+rR-2, "6");
-    u8g2_CompassAndClock.drawStr(xR+rR-6, hY+2, "3"); 
-    u8g2_CompassAndClock.drawStr(xR-rR+1, hY+2, "9");
-    u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad)));
-    u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad)));
+    canvas.drawLine(r1TailX, r1TailY, r2TailX, r2TailY);
+}
 
-    u8g2_CompassAndClock.sendBuffer();
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
-  }
+void drawMissionClock(U8G2 &canvas, float clockCenterX, float verticalCenterY, uint32_t elapsedSeconds) {
+  canvas.setFont(u8g2_font_4x6_tr);
+  canvas.drawStr(77, 18, "12"); 
+  canvas.drawStr(78, 55, "6");
+  canvas.drawStr(95, 34, "3"); 
+  canvas.drawStr(63, 34, "9");
+
+  float minutesHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)((elapsedSeconds / 60) % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
+  float secondsHandRadians = (elapsedSeconds == 0) ? -1.5708f : (((float)(elapsedSeconds % 60) * 6.0f) - 90.0f) * (PI / 180.0f);
+
+  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, (int)(clockCenterX + 13.0f * cosf(minutesHandRadians)), (int)(verticalCenterY + 13.0f * sinf(minutesHandRadians)));
+  canvas.drawLine((int)clockCenterX, (int)verticalCenterY, (int)(clockCenterX + 17.0f * cosf(secondsHandRadians)), (int)(verticalCenterY + 17.0f * sinf(secondsHandRadians)));
+}
+
+void oled_CompassAndClockTaskCode(void * pvParameters) {
+    // --- PERSISTENT SMOOTHING VARIABLES ---
+    // These store the current "visual" position of the needles
+    static float visualHeading = 0.0f;
+    static float visualHome = 0.0f;
+    
+    // Smoothing constant (0.0 to 1.0)
+    // 0.1 is very smooth/slow, 0.3 is snappy but still filtered.
+    const float smoothingAlpha = 0.15f; 
+
+    static bool wasArmed = false; 
+    const TickType_t xFrequency = pdMS_TO_TICKS(40); 
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    for(;;) {
+        // 1. DATA SNAPSHOT (Actual Telemetry)
+        float targetHeading = sharedHeading;
+        float targetHome = (float)dirToHome;
+        bool isSystemArmed = isArmed;
+        uint32_t currentMillis = millis();
+
+        // 2. SHORTEST-PATH INTERPOLATION (Heading)
+        // This prevents the needle from spinning the long way around when passing 360/0
+        float deltaHeading = targetHeading - visualHeading;
+        if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
+        if (deltaHeading < -180.0f) deltaHeading += 360.0f;
+        visualHeading += deltaHeading * smoothingAlpha;
+
+        // 3. SHORTEST-PATH INTERPOLATION (Home Bearing)
+        float deltaHome = targetHome - visualHome;
+        if (deltaHome > 180.0f)  deltaHome -= 360.0f;
+        if (deltaHome < -180.0f) deltaHome += 360.0f;
+        visualHome += deltaHome * smoothingAlpha;
+
+        // 4. MISSION TIMER LOGIC
+        if (isSystemArmed) {
+            if (!wasArmed) { 
+                missionStartTime = currentMillis; 
+                wasArmed = true; 
+            }
+            finalFlightTime = (currentMillis - missionStartTime) / 1000;
+        } else { 
+            wasArmed = false; 
+        }
+
+        // --- GEOMETRY CONSTANTS ---
+        const float verticalCenterY = 32.0f; 
+        const float compassCenterX = 22.0f;
+        const float clockCenterX = 80.0f;
+
+        u8g2_CompassAndClock.clearBuffer();
+
+        // --- 5. DRAW INSTRUMENTS ---
+        
+        // A. Static Compass Frame (Labels and Ticks)
+        drawP51CompassFrame(u8g2_CompassAndClock, compassCenterX, verticalCenterY);
+
+        // B. Home Needle (Thin with T-Head)
+        // Using the smoothed 'visualHome' instead of raw telemetry
+        drawP51HomeNeedle(u8g2_CompassAndClock, compassCenterX, verticalCenterY, visualHome);
+
+        // C. Heading Needle (Heavy Double-Bar)
+        // Using the smoothed 'visualHeading'
+        drawP51HeadingNeedle(u8g2_CompassAndClock, compassCenterX, verticalCenterY, visualHeading);
+
+        // D. Mission Clock
+        drawMissionClock(u8g2_CompassAndClock, clockCenterX, verticalCenterY, finalFlightTime);
+
+        // 6. RENDER & WAIT
+        u8g2_CompassAndClock.sendBuffer();
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    }
 }
