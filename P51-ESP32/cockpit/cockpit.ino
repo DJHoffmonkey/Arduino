@@ -29,14 +29,14 @@
 
 #define isDebug true
 
-TaskHandle_t OLEDTask;
+TaskHandle_t OLED_CompassAndClockTask;
 float sharedHeading = 0; // We use this to pass data between cores
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 TFT_eSprite ucSprite = TFT_eSprite(&tft);
 // Initialize OLED (SSD1306 128x64)
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -49,8 +49,7 @@ int16_t  dirToHome = 0; // Absolute bearing from FC to Home
 bool lastGearDown = false, gearInTransit = false;
 uint32_t gearTimer = 0;
 const uint32_t GEAR_CYCLE_TIME = 5000;
-uint32_t missionStartTime = 0;
-uint32_t finalFlightTime = 0; // To "freeze" the hands on landing
+volatile uint32_t missionStartTime = 0, finalFlightTime = 0;
 
 void setup() {
   console.begin(115200);
@@ -67,13 +66,7 @@ void setup() {
   ucSprite.setTextDatum(MC_DATUM);  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
 
-
-  // Initialize I2C and OLED
-  Wire.begin(8, 9); // SDA on 8, SCL on 9 for ESP32-S3
-  Wire.setClock(800000); // Set I2C to 400kHz
-  u8g2.begin();
-  
-  console.println("--- OLED MAG COMPASS ONLINE ---");
+  setupOLED_CompassAndClock();
 
   // Handshake
   unsigned long startScan = millis();
@@ -89,63 +82,23 @@ void setup() {
 
   // Start the OLED task on Core 0 (Main loop runs on Core 1)
   xTaskCreatePinnedToCore(
-      oledTaskCode,   /* Function to implement the task */
-      "OLEDTask",     /* Name of the task */
-      10000,          /* Stack size in words */
-      NULL,           /* Task input parameter */
-      1,              /* Priority of the task */
-      &OLEDTask,      /* Task handle */
-      0);             /* Core where the task should run */
+      oled_CompassAndClockTaskCode, // Function to implement the task
+      "OLED_CompassAndClockTask", // Name of the task
+      10000, // Stack size in words 
+      NULL, // Task input parameter 
+      1, // Priority of the task 
+      &OLED_CompassAndClockTask, // Task handle
+      0); // Core where the task should run
 }
 
-
-void setupOLED() {
+void setupOLED_CompassAndClock() {
   Wire.begin(8, 9); // SDA, SCL
-  u8g2.begin();
-}
-
-void drawOLED(float heading) {
-  static uint32_t lastOLED = 0;
-  // 500ms (2Hz) is the "Sweet Spot" to minimize TFT flickering
-  if (millis() - lastOLED < 500) return; 
-  lastOLED = millis();
-
-  u8g2.clearBuffer();
-  
-  // --- 1. MAGNETIC COMPASS ---
-  u8g2.setFont(u8g2_font_7x14_tf); 
-  u8g2.drawStr(0, 12, "MAG. COMPASS");
-  
-  // Cast float to int for the display
-  int iHeading = (int)heading % 360;
-  if (iHeading < 0) iHeading += 360; // Standardize 0-359
-  
-  char hBuf[4];
-  sprintf(hBuf, "%03d", iHeading);
-  
-  u8g2.setFont(u8g2_font_logisoso22_tn); // Nice big military digits
-  u8g2.drawStr(0, 42, hBuf);
-  u8g2.drawTriangle(18, 48, 23, 58, 13, 58); // Pointer arrow
-
-  // --- 2. MISSION CLOCK (Mins:Secs) ---
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(80, 12, "MISSION");
-
-  uint32_t totalSecs = millis() / 1000;
-  uint32_t m = totalSecs / 60;
-  uint32_t s = totalSecs % 60;
-  
-  char tBuf[8];
-  sprintf(tBuf, "%02d:%02d", m, s); // Minutes:Seconds
-  
-  u8g2.setFont(u8g2_font_9x15_tf);
-  u8g2.drawStr(80, 32, tBuf);
-
-  u8g2.sendBuffer(); // This is the heavy lifting command
+  Wire.setClock(800000); // Set I2C to 400kHz
+  u8g2_CompassAndClock.begin();
+  console.println("--- OLED MAG COMPASS ONLINE ---");
 }
 
 // --- CORE MSP LOGIC ---
-
 void sendMSPRequest(uint8_t cmd) {
   uint8_t request[] = {0x24, 0x4D, 0x3C, 0x00, cmd, cmd};
   toAndFromFC.write(request, 6);
@@ -717,7 +670,7 @@ void loop() {
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
 
-void oledTaskCode(void * pvParameters) {
+void oled_CompassAndClockTaskCode(void * pvParameters) {
   static bool wasArmed = false; 
   const TickType_t xFrequency = pdMS_TO_TICKS(40); // Consistent 25Hz
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -745,18 +698,18 @@ void oledTaskCode(void * pvParameters) {
     float sRad = (s == 0) ? -1.5708 : (((float)(s % 60) * 6.0) - 90.0) * (PI/180.0);
 
     // 2. DRAWING (High speed buffer writes)
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_4x6_tr);
+    u8g2_CompassAndClock.clearBuffer();
+    u8g2_CompassAndClock.setFont(u8g2_font_4x6_tr);
 
     // Compass Base
     const int hY = 32, xL = 22, xR = 80, rL = 24, rR = 19;
-    u8g2.drawStr(xL-2, hY-rL+7, "N"); u8g2.drawStr(xL-2, hY+rL-2, "S"); 
-    u8g2.drawStr(xL+rL-7, hY+2, "E"); u8g2.drawStr(xL-rL+2, hY+2, "W"); 
+    u8g2_CompassAndClock.drawStr(xL-2, hY-rL+7, "N"); u8g2_CompassAndClock.drawStr(xL-2, hY+rL-2, "S"); 
+    u8g2_CompassAndClock.drawStr(xL+rL-7, hY+2, "E"); u8g2_CompassAndClock.drawStr(xL-rL+2, hY+2, "W"); 
 
     for (int a = 30; a < 360; a += 30) {
       if (a % 90 == 0) continue; 
       float tR = (a - 90) * (PI/180.0);
-      u8g2.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-4)*cos(tR)), (int)(hY+(rL-4)*sin(tR)));
+      u8g2_CompassAndClock.drawLine((int)(xL+rL*cos(tR)), (int)(hY+rL*sin(tR)), (int)(xL+(rL-4)*cos(tR)), (int)(hY+(rL-4)*sin(tR)));
     }
 
     // Double Rail Needle
@@ -764,24 +717,24 @@ void oledTaskCode(void * pvParameters) {
     int tx2 = (int)(xL + (rL-2)*cH - 1.6*cO), ty2 = (int)(hY + (rL-2)*sH - 1.6*sO);
     int bx1 = (int)(xL + 2*cH + 1.6*cO), by1 = (int)(hY + 2*sH + 1.6*sO);
     int bx2 = (int)(xL + 2*cH - 1.6*cO), by2 = (int)(hY + 2*sH - 1.6*sO);
-    u8g2.drawLine(bx1, by1, tx1, ty1); u8g2.drawLine(bx2, by2, tx2, ty2); 
-    u8g2.drawLine(tx1, ty1, tx2, ty2); 
-    u8g2.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH));
+    u8g2_CompassAndClock.drawLine(bx1, by1, tx1, ty1); u8g2_CompassAndClock.drawLine(bx2, by2, tx2, ty2); 
+    u8g2_CompassAndClock.drawLine(tx1, ty1, tx2, ty2); 
+    u8g2_CompassAndClock.drawLine(xL, hY, (int)(xL - 10*cH), (int)(hY - 10*sH));
 
     // Home Bug
     float radC = (dH - 90.0) * (PI / 180.0);
     int bugX = (int)(xL + (rL-3)*cos(radC)), bugY = (int)(hY + (rL-3)*sin(radC));
-    u8g2.drawLine((int)(bugX + 6*cos(radC+1.5708)), (int)(bugY + 6*sin(radC+1.5708)), 
+    u8g2_CompassAndClock.drawLine((int)(bugX + 6*cos(radC+1.5708)), (int)(bugY + 6*sin(radC+1.5708)), 
                   (int)(bugX - 6*cos(radC+1.5708)), (int)(bugY - 6*sin(radC+1.5708)));
 
     // Clock
-    u8g2.drawStr(xR-3, hY-rR+7, "12"); u8g2.drawStr(xR-2, hY+rR-2, "6");
-    u8g2.drawStr(xR+rR-6, hY+2, "3"); u8g2.drawStr(xR-rR+1, hY+2, "9");
-    u8g2.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad)));
-    u8g2.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad)));
+    u8g2_CompassAndClock.drawStr(xR-3, hY-rR+7, "12"); u8g2_CompassAndClock.drawStr(xR-2, hY+rR-2, "6");
+    u8g2_CompassAndClock.drawStr(xR+rR-6, hY+2, "3"); u8g2_CompassAndClock.drawStr(xR-rR+1, hY+2, "9");
+    u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-6)*cos(mRad)), (int)(hY + (rR-6)*sin(mRad)));
+    u8g2_CompassAndClock.drawLine(xR, hY, (int)(xR + (rR-1)*cos(sRad)), (int)(hY + (rR-1)*sin(sRad)));
 
     // 3. PUSH TO SCREEN
-    u8g2.sendBuffer();
+    u8g2_CompassAndClock.sendBuffer();
 
     // Wait for the next precise interval
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
