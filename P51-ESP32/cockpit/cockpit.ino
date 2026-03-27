@@ -28,6 +28,9 @@
 #define CH_ARM 14
 
 #define isDebug true
+#define isCOMPASS_DISPLAY_ACTIVE true
+#define isENGINE_DISPLAY_ACTIVE true
+
 
 SemaphoreHandle_t i2cMutex;
 TaskHandle_t OLED_CompassAndClockTask;
@@ -36,10 +39,10 @@ float sharedHeading = 0; // We use this to pass data between cores
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite canvas = TFT_eSprite(&tft);
 TFT_eSprite ucSprite = TFT_eSprite(&tft);
-// Initialize OLED (SSD1306 128x64)
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 
+// Initialize OLED (SSD1306 128x64)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -74,9 +77,6 @@ void setup() {
   ucSprite.setTextDatum(MC_DATUM);  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
 
-  setupOLED_CompassAndClock();
-  setupOLED_Engine();
-
   i2cMutex = xSemaphoreCreateMutex();
 
   // Handshake
@@ -91,39 +91,28 @@ void setup() {
     }
   }
 
-  // Start the OLED task on Core 0 (Main loop runs on Core 1)
-  xTaskCreatePinnedToCore(
-      oled_CompassAndClockTaskCode, // Function to implement the task
-      "OLED_CompassAndClockTask", // Name of the task
-      4096, // Stack size in words 
-      NULL, // Task input parameter 
-      1, // Priority of the task 
-      &OLED_CompassAndClockTask, // Task handle
-      0); // Core where the task should run
+  if (isCOMPASS_DISPLAY_ACTIVE || isENGINE_DISPLAY_ACTIVE ) {
+    Wire.begin(8, 9); 
+    Wire.setClock(400000); // 400kHz is safer for SSD1306 than 800kHz to prevent flickering
+  }
 
-  // Create the Engine/Fuel Display Task
-  xTaskCreatePinnedToCore(
-    oled_EngineDisplayTaskCode,   // Function to run
-    "EngineDisplayTask", // Name for debugging
-    4096, // Stack size (4KB is safe for U8G2)
-    NULL, // Parameter to pass
-    1, // Priority 
-    NULL, // Task handle
-    0 // Pin to Core 0
-  );
+  if (isCOMPASS_DISPLAY_ACTIVE) setupOLED_CompassAndClock();
+  if (isENGINE_DISPLAY_ACTIVE) setupOLED_Engine();
+
+  xTaskCreatePinnedToCore(oled_MasterTask, "DualOLED", 8192, NULL, 1, NULL, 0);
+
 }
 
 void setupOLED_CompassAndClock() {
-  Wire.begin(8, 9); 
-  Wire.setClock(400000); // 400kHz is safer for SSD1306 than 800kHz to prevent flickering
+  u8g2_CompassAndClock.setI2CAddress(0x3C * 2);
   u8g2_CompassAndClock.begin();
+  u8g2_CompassAndClock.setFlipMode(0); // Ensure landscape
   if (isDebug) console.println("--- OLED MAG COMPASS ONLINE ---");
 }
 void setupOLED_Engine() {
-  Wire.begin(8, 9); 
-  Wire.setClock(400000); 
-  u8g2_Engine.begin();
   u8g2_Engine.setI2CAddress(0x3D * 2);
+  u8g2_Engine.begin();
+  u8g2_CompassAndClock.setFlipMode(0); // Ensure landscape
   if (isDebug) console.println("--- OLED ENGINE ONLINE ---");
 }
 
@@ -905,130 +894,76 @@ void drawP51FuelGauge(U8G2 &canvas, float centerX, float centerY, float percent)
     canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3); // Center Hub
 }
 
-void oled_EngineDisplayTaskCode(void * pvParameters) {
-    static float visualRpm = 0.0f;
-    static float visualFuel = 100.0f;
-    const float motorKv = 580.0f; // P-51 Motor Rating
-    const float alpha = 0.12f;    // Smoothing factor
-
-    for(;;) {
-        // 1. DYNAMIC RPM CALCULATION
-        // theoretical RPM = Kv * Current Voltage * Throttle Percentage (0.0 to 1.0)
-        float targetRpm = motorKv * sharedVoltage * sharedThrottle;
-        float targetFuel = sharedBattery; 
-
-        // 2. AUTO-SCALE LOGIC (4S vs 6S detection)
-        // If voltage > 18V, assume 6S and use 16k scale. Otherwise, 10k for 4S.
-        float maxScaleRpm = (sharedVoltage > 18.0f) ? 16000.0f : 10000.0f;
-
-        // 3. SMOOTHING (Interpolation)
-        visualRpm += (targetRpm - visualRpm) * alpha;
-        visualFuel += (targetFuel - visualFuel) * alpha;
-
-        u8g2_Engine.clearBuffer();
-
-        // Layout Constants for Portrait (64w x 128h)
-        const float centerX = 32.0f;
-        const float tachoCenterY = 32.0f; // Top half
-        const float fuelCenterY = 96.0f;  // Bottom half
-
-        // 4. DRAW TACHO (Top)
-        // Note: Passing maxScaleRpm to ensure the needle points to the right spot
-        drawP51Tacho(u8g2_Engine, centerX, tachoCenterY, visualRpm, maxScaleRpm);
-
-        // 5. DRAW FUEL (Bottom)
-        drawP51FuelGauge(u8g2_Engine, centerX, fuelCenterY, visualFuel);
-
-        // 6. DIGITAL RPM READOUT (Centered in the gap)
-        u8g2_Engine.setFont(u8g2_font_4x6_tr);
-        u8g2_Engine.setCursor(20, 68);
-        u8g2_Engine.print((int)targetRpm);
-        u8g2_Engine.print(" RPM");
-
-        // I2C Safe Send
-        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            u8g2_Engine.sendBuffer(); 
-            xSemaphoreGive(i2cMutex);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(40));
-    }
-}
-
-void oled_CompassAndClockTaskCode(void * pvParameters) {
-    // --- PERSISTENT SMOOTHING VARIABLES ---
-    // These store the current "visual" position of the needles
+void updateCompassAndClockDisplay() {
     static float visualHeading = 0.0f;
     static float visualHome = 0.0f;
-    
-    // Smoothing constant (0.0 to 1.0)
-    // 0.1 is very smooth/slow, 0.3 is snappy but still filtered.
     const float smoothingAlpha = 0.15f; 
-
     static bool wasArmed = false; 
-    const TickType_t xFrequency = pdMS_TO_TICKS(40); 
-    TickType_t xLastWakeTime = xTaskGetTickCount();
 
+    // 1. Data Logic
+    float targetHeading = sharedHeading;
+    float targetHome = (float)dirToHome;
+    
+    float deltaHeading = targetHeading - visualHeading;
+    if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
+    if (deltaHeading < -180.0f) deltaHeading += 360.0f;
+    visualHeading += deltaHeading * smoothingAlpha;
+
+    float deltaHome = targetHome - visualHome;
+    if (deltaHome > 180.0f)  deltaHome -= 360.0f;
+    if (deltaHome < -180.0f) deltaHome += 360.0f;
+    visualHome += deltaHome * smoothingAlpha;
+
+    if (isArmed) {
+        if (!wasArmed) { missionStartTime = millis(); wasArmed = true; }
+        finalFlightTime = (millis() - missionStartTime) / 1000;
+    } else { wasArmed = false; }
+
+    // 2. Draw & Send
+    u8g2_CompassAndClock.clearBuffer();
+    drawP51CompassFrame(u8g2_CompassAndClock, 22.0f, 32.0f);
+    drawP51HomeNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHome);
+    drawP51HeadingNeedle(u8g2_CompassAndClock, 22.0f, 32.0f, visualHeading);
+    drawMissionClock(u8g2_CompassAndClock, 80.0f, 32.0f, finalFlightTime);
+    u8g2_CompassAndClock.sendBuffer(); 
+}
+
+void updateEngineDisplay() {
+    static float visualRpm = 0.0f;
+    static float visualFuel = 100.0f;
+    const float motorKv = 580.0f; 
+    const float alpha = 0.12f;
+
+    // 1. Engine Logic
+    float targetRpm = motorKv * vBat * sharedThrottle; 
+    float maxScaleRpm = (vBat > 18.0f) ? 16000.0f : 10000.0f;
+    visualRpm += (targetRpm - visualRpm) * alpha;
+    visualFuel += (sharedBattery - visualFuel) * alpha;
+
+    // 2. Draw & Send
+    u8g2_Engine.clearBuffer();
+    drawP51Tacho(u8g2_Engine, 32.0f, 32.0f, visualRpm, maxScaleRpm);
+    drawP51FuelGauge(u8g2_Engine, 32.0f, 96.0f, visualFuel);
+    
+    u8g2_Engine.setFont(u8g2_font_4x6_tr);
+    u8g2_Engine.setCursor(20, 68);
+    u8g2_Engine.print((int)targetRpm);
+    u8g2_Engine.print(" RPM");
+    u8g2_Engine.sendBuffer();
+}
+
+void oled_MasterTask(void * pvParameters) {
     for(;;) {
-        // 1. DATA SNAPSHOT (Actual Telemetry)
-        float targetHeading = sharedHeading;
-        float targetHome = (float)dirToHome;
-        bool isSystemArmed = isArmed;
-        uint32_t currentMillis = millis();
-
-        // 2. SHORTEST-PATH INTERPOLATION (Heading)
-        // This prevents the needle from spinning the long way around when passing 360/0
-        float deltaHeading = targetHeading - visualHeading;
-        if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
-        if (deltaHeading < -180.0f) deltaHeading += 360.0f;
-        visualHeading += deltaHeading * smoothingAlpha;
-
-        // 3. SHORTEST-PATH INTERPOLATION (Home Bearing)
-        float deltaHome = targetHome - visualHome;
-        if (deltaHome > 180.0f)  deltaHome -= 360.0f;
-        if (deltaHome < -180.0f) deltaHome += 360.0f;
-        visualHome += deltaHome * smoothingAlpha;
-
-        // 4. MISSION TIMER LOGIC
-        if (isSystemArmed) {
-            if (!wasArmed) { 
-                missionStartTime = currentMillis; 
-                wasArmed = true; 
-            }
-            finalFlightTime = (currentMillis - missionStartTime) / 1000;
-        } else { 
-            wasArmed = false; 
-        }
-
-        // --- GEOMETRY CONSTANTS ---
-        const float verticalCenterY = 32.0f; 
-        const float compassCenterX = 22.0f;
-        const float clockCenterX = 80.0f;
-
-        u8g2_CompassAndClock.clearBuffer();
-
-        // --- 5. DRAW INSTRUMENTS ---
+        // Step 1: Update Screen 0x3C
+        updateCompassAndClockDisplay();
         
-        // A. Static Compass Frame (Labels and Ticks)
-        drawP51CompassFrame(u8g2_CompassAndClock, compassCenterX, verticalCenterY);
+        // Step 2: Small breather for the I2C bus hardware (optional but safe)
+        vTaskDelay(pdMS_TO_TICKS(5));
 
-        // B. Home Needle (Thin with T-Head)
-        // Using the smoothed 'visualHome' instead of raw telemetry
-        drawP51HomeNeedle(u8g2_CompassAndClock, compassCenterX, verticalCenterY, visualHome);
+        // Step 3: Update Screen 0x3D
+        updateEngineDisplay();
 
-        // C. Heading Needle (Heavy Double-Bar)
-        // Using the smoothed 'visualHeading'
-        drawP51HeadingNeedle(u8g2_CompassAndClock, compassCenterX, verticalCenterY, visualHeading);
-
-        // D. Mission Clock
-        drawMissionClock(u8g2_CompassAndClock, clockCenterX, verticalCenterY, finalFlightTime);
-
-        // 6. RENDER & WAIT        
-        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            u8g2_CompassAndClock.sendBuffer(); // Only send if the bus is free
-            xSemaphoreGive(i2cMutex);
-        }
-
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        // Step 4: Total loop frequency (approx 20-25Hz)
+        vTaskDelay(pdMS_TO_TICKS(40)); 
     }
 }
