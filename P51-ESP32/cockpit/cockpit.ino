@@ -779,48 +779,47 @@ void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float r, float h
 }
 
 void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint32_t msTotal) {
-    // 1. LARGER FONT (5x7)
     canvas.setFont(u8g2_font_5x7_tr);
     
-    // Labels (Offsets adjusted for 5x7 width/height)
+    // 1. LABELS (10-minute dial)
     canvas.drawStr(centerX - 5, centerY - 10, "10"); 
     canvas.drawStr(centerX - 3, centerY + 16, "5");
     canvas.drawStr(centerX + 11, centerY + 3,  "2"); 
     canvas.drawStr(centerX - 18, centerY + 3,  "7");
 
-    // 2. DOT TICKS (Minimalist single pixels)
+    // 2. DOT TICKS (Only draw where numbers ARE NOT)
     for (int i = 0; i < 360; i += 36) { 
+        // Skip 0, 90, 180, 270 degrees to keep the numbers clear
+        if (i == 0 || i == 90 || i == 180 || i == 270) continue;
+
         float rad = (i - 90.0f) * (M_PI / 180.0f);
         canvas.drawPixel((int)(centerX + r * cosf(rad)), (int)(centerY + r * sinf(rad)));
     }
 
-    // --- 3. MINUTES HAND (Thick, 10 Min Lap) ---
-    // 600,000ms = 10 mins. 360/600,000 = 0.0006 deg/ms
+    // --- 3. MISSION MINUTES HAND (Thick - 10 Min Lap) ---
     float minMS = (float)(msTotal % 600000);
     float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
-    float minTipX = centerX + (r * 0.75f) * cosf(minRad);
-    float minTipY = centerY + (r * 0.75f) * sinf(minRad);
+    float minTipX = centerX + (r * 0.65f) * cosf(minRad);
+    float minTipY = centerY + (r * 0.65f) * sinf(minRad);
     
-    // Draw 2-pixel thick minute hand
-    float pX = -sinf(minRad), pY = cosf(minRad);
+    float mPX = -sinf(minRad), mPY = cosf(minRad);
     for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
-        drawSafeLine(canvas, centerX + (pX * i), centerY + (pY * i), minTipX + (pX * i), minTipY + (pY * i));
+        drawSafeLine(canvas, centerX + (mPX * i), centerY + (mPY * i), minTipX + (mPX * i), minTipY + (mPY * i));
     }
 
-    // --- 4. SECONDS HAND (Thin, 1 Min Lap, LONGER) ---
-    // 60,000ms = 1 min. 360/60,000 = 0.006 deg/ms
-    float secMS = (float)(msTotal % 60000);
+    // --- 4. SECONDS HAND (Thin/Long - 1 Min Lap) ---
+    uint32_t smoothSecMs = (msTotal / 100) * 100; 
+    float secMS = (float)(smoothSecMs % 60000);
     float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
-    
-    // Tip extended to 65% of radius for better visibility
-    float secTipX = centerX + (r * 0.65f) * cosf(secRad);
-    float secTipY = centerY + (r * 0.65f) * sinf(secRad);
+    float secTipX = centerX + (r - 1.0f) * cosf(secRad);
+    float secTipY = centerY + (r - 1.0f) * sinf(secRad);
     
     drawSafeLine(canvas, centerX, centerY, secTipX, secTipY);
 
     // 5. CENTER HUB
     canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
 }
+
 
 void drawTacho(U8G2 &canvas, float centerX, float centerY, float rpm, float maxRpm) {
     canvas.setFont(u8g2_font_u8glib_4_tf); 
@@ -892,7 +891,7 @@ void updateCompassAndClockDisplay() {
   static float visualHome = 0.0f;
   const float smoothingAlpha = 0.15f; 
   
-  static uint32_t missionStartTime = 0; 
+  // REMOVED: static uint32_t missionStartTime = 0; (Using global instead)
   static bool wasArmed = false; 
 
   // --- 1. SMOOTHING LOGIC ---
@@ -906,13 +905,12 @@ void updateCompassAndClockDisplay() {
   if (deltaHome < -180.0f) deltaHome += 360.0f;
   visualHome += deltaHome * smoothingAlpha;
 
-  // --- 2. MISSION TIMER LOGIC (Smooth Milliseconds) ---
+  // --- 2. MISSION TIMER LOGIC ---
   if (isArmed) {
       if (!wasArmed) { 
-          missionStartTime = millis(); 
+          missionStartTime = millis(); // Updates the GLOBAL variable
           wasArmed = true; 
       }
-      // REMOVED "/ 1000" to keep movement fluid
       finalFlightTime = (millis() - missionStartTime); 
   } else { 
       wasArmed = false; 
@@ -932,12 +930,10 @@ void updateCompassAndClockDisplay() {
   drawHomeNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHome);
   drawHeadingNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHeading);
   
-  // Now passing milliseconds
   drawMissionClock(u8g2_CompassAndClock, clockX, centerY, clockR, finalFlightTime);
 
   u8g2_CompassAndClock.sendBuffer(); 
 }
-
 
 void updateEngineDisplay() {
   static float visualRpm = 0.0f;
