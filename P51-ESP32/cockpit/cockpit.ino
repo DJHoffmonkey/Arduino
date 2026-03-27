@@ -29,6 +29,7 @@
 
 #define isDebug true
 
+SemaphoreHandle_t i2cMutex;
 TaskHandle_t OLED_CompassAndClockTask;
 float sharedHeading = 0; // We use this to pass data between cores
 
@@ -37,6 +38,8 @@ TFT_eSprite canvas = TFT_eSprite(&tft);
 TFT_eSprite ucSprite = TFT_eSprite(&tft);
 // Initialize OLED (SSD1306 128x64)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
+
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -49,13 +52,18 @@ int16_t  dirToHome = 0; // Absolute bearing from FC to Home
 bool lastGearDown = false, gearInTransit = false;
 uint32_t gearTimer = 0;
 const uint32_t GEAR_CYCLE_TIME = 5000;
+
+// --- GLOBAL TELEMETRY DATA ---
 volatile uint32_t missionStartTime = 0, finalFlightTime = 0;
+volatile float sharedVoltage = 16.8f; // Battery voltage from telemetry
+volatile float sharedThrottle = 0.0f; // Current throttle % (0.0 to 1.0)
+volatile float sharedBattery = 100.0f;
 
 void setup() {
   console.begin(115200);
   while (!console);
   delay(500);
-  console.println("--- P-51 COCKPIT: BARE METAL START ---");
+  if (isDebug) console.println("--- P-51 COCKPIT: BARE METAL START ---");
 
   tft.init();
   tft.setRotation(1);
@@ -67,6 +75,9 @@ void setup() {
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
 
   setupOLED_CompassAndClock();
+  setupOLED_Engine();
+
+  i2cMutex = xSemaphoreCreateMutex();
 
   // Handshake
   unsigned long startScan = millis();
@@ -75,7 +86,7 @@ void setup() {
     delay(100); 
     if (parseMSP()) {
       isBenchMode = false;
-      console.println("!!! FC CONNECTED !!!");
+      if (isDebug) console.println("!!! FC CONNECTED !!!");
       break;
     }
   }
@@ -84,18 +95,36 @@ void setup() {
   xTaskCreatePinnedToCore(
       oled_CompassAndClockTaskCode, // Function to implement the task
       "OLED_CompassAndClockTask", // Name of the task
-      10000, // Stack size in words 
+      4096, // Stack size in words 
       NULL, // Task input parameter 
       1, // Priority of the task 
       &OLED_CompassAndClockTask, // Task handle
       0); // Core where the task should run
+
+  // Create the Engine/Fuel Display Task
+  xTaskCreatePinnedToCore(
+    oled_EngineDisplayTaskCode,   // Function to run
+    "EngineDisplayTask", // Name for debugging
+    4096, // Stack size (4KB is safe for U8G2)
+    NULL, // Parameter to pass
+    1, // Priority 
+    NULL, // Task handle
+    0 // Pin to Core 0
+  );
 }
 
 void setupOLED_CompassAndClock() {
   Wire.begin(8, 9); 
   Wire.setClock(400000); // 400kHz is safer for SSD1306 than 800kHz to prevent flickering
   u8g2_CompassAndClock.begin();
-  console.println("--- OLED MAG COMPASS ONLINE ---");
+  if (isDebug) console.println("--- OLED MAG COMPASS ONLINE ---");
+}
+void setupOLED_Engine() {
+  Wire.begin(8, 9); 
+  Wire.setClock(400000); 
+  u8g2_Engine.begin();
+  u8g2_Engine.setI2CAddress(0x3D * 2);
+  if (isDebug) console.println("--- OLED ENGINE ONLINE ---");
 }
 
 // --- CORE MSP LOGIC ---
@@ -812,6 +841,120 @@ void drawMissionClock(U8G2 &canvas, float clockCenterX, float verticalCenterY, u
   canvas.drawLine((int)clockCenterX, (int)verticalCenterY, secEndX, secEndY);
 }
 
+void drawP51Tacho(U8G2 &canvas, float centerX, float centerY, float rpm, float maxRpm) {
+    canvas.setFont(u8g2_font_4x6_tr);
+    
+    // Draw Scale Ticks (270-degree sweep)
+    for (int i = 0; i <= 10; i++) {
+        float angle = 225.0f - (i * 27.0f); 
+        float rad = angle * (M_PI / 180.0f);
+        
+        // Match compass diameter (Radius 22-24)
+        int xOuter = (int)constrain(centerX + 24 * cosf(rad), 0, 63);
+        int yOuter = (int)constrain(centerY + 24 * sinf(rad), 0, 127);
+        int xInner = (int)constrain(centerX + (i % 2 == 0 ? 19 : 21) * cosf(rad), 0, 63);
+        int yInner = (int)constrain(centerY + (i % 2 == 0 ? 19 : 21) * sinf(rad), 0, 127);
+        
+        canvas.drawLine(xOuter, yOuter, xInner, yInner);
+        
+        if (i % 2 == 0) {
+            int labelX = (int)(centerX + 13 * cosf(rad)) - 2;
+            int labelY = (int)(centerY + 13 * sinf(rad)) + 3;
+            canvas.setCursor(labelX, labelY);
+            canvas.print(i);
+        }
+    }
+
+    // Needle Logic
+    float needleRad = (225.0f - ((rpm / maxRpm) * 270.0f)) * (M_PI / 180.0f);
+    int tipX = (int)constrain(centerX + 22 * cosf(needleRad), 0, 63);
+    int tipY = (int)constrain(centerY + 22 * sinf(needleRad), 0, 127);
+    
+    canvas.drawLine((int)centerX, (int)centerY, tipX, tipY);
+    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3); // Center Hub
+    canvas.drawStr((int)centerX - 8, (int)centerY + 8, "RPM");
+}
+
+void drawP51FuelGauge(U8G2 &canvas, float centerX, float centerY, float percent) {
+    canvas.setFont(u8g2_font_4x6_tr);
+
+    // Labels for E and F
+    canvas.drawStr((int)centerX - 18, (int)centerY + 18, "E");
+    canvas.drawStr((int)centerX + 14, (int)centerY + 18, "F");
+    canvas.drawStr((int)centerX - 10, (int)centerY - 8, "FUEL");
+
+    // Scale Ticks (Usually a smaller sweep for fuel, e.g., 180 degrees)
+    for (int i = 0; i <= 4; i++) {
+        float angle = 210.0f - (i * 60.0f); // 240 degree sweep
+        float rad = angle * (M_PI / 180.0f);
+        
+        int xOuter = (int)constrain(centerX + 24 * cosf(rad), 0, 63);
+        int yOuter = (int)constrain(centerY + 24 * sinf(rad), 0, 127);
+        int xInner = (int)constrain(centerX + 20 * cosf(rad), 0, 63);
+        int yInner = (int)constrain(centerY + 20 * sinf(rad), 0, 127);
+        
+        canvas.drawLine(xOuter, yOuter, xInner, yInner);
+    }
+
+    // Needle Logic
+    float fuelRad = (210.0f - ((percent / 100.0f) * 240.0f)) * (M_PI / 180.0f);
+    int tipX = (int)constrain(centerX + 22 * cosf(fuelRad), 0, 63);
+    int tipY = (int)constrain(centerY + 22 * sinf(fuelRad), 0, 127);
+    
+    canvas.drawLine((int)centerX, (int)centerY, tipX, tipY);
+    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3); // Center Hub
+}
+
+void oled_EngineDisplayTaskCode(void * pvParameters) {
+    static float visualRpm = 0.0f;
+    static float visualFuel = 100.0f;
+    const float motorKv = 580.0f; // P-51 Motor Rating
+    const float alpha = 0.12f;    // Smoothing factor
+
+    for(;;) {
+        // 1. DYNAMIC RPM CALCULATION
+        // theoretical RPM = Kv * Current Voltage * Throttle Percentage (0.0 to 1.0)
+        float targetRpm = motorKv * sharedVoltage * sharedThrottle;
+        float targetFuel = sharedBattery; 
+
+        // 2. AUTO-SCALE LOGIC (4S vs 6S detection)
+        // If voltage > 18V, assume 6S and use 16k scale. Otherwise, 10k for 4S.
+        float maxScaleRpm = (sharedVoltage > 18.0f) ? 16000.0f : 10000.0f;
+
+        // 3. SMOOTHING (Interpolation)
+        visualRpm += (targetRpm - visualRpm) * alpha;
+        visualFuel += (targetFuel - visualFuel) * alpha;
+
+        u8g2_Engine.clearBuffer();
+
+        // Layout Constants for Portrait (64w x 128h)
+        const float centerX = 32.0f;
+        const float tachoCenterY = 32.0f; // Top half
+        const float fuelCenterY = 96.0f;  // Bottom half
+
+        // 4. DRAW TACHO (Top)
+        // Note: Passing maxScaleRpm to ensure the needle points to the right spot
+        drawP51Tacho(u8g2_Engine, centerX, tachoCenterY, visualRpm, maxScaleRpm);
+
+        // 5. DRAW FUEL (Bottom)
+        drawP51FuelGauge(u8g2_Engine, centerX, fuelCenterY, visualFuel);
+
+        // 6. DIGITAL RPM READOUT (Centered in the gap)
+        u8g2_Engine.setFont(u8g2_font_4x6_tr);
+        u8g2_Engine.setCursor(20, 68);
+        u8g2_Engine.print((int)targetRpm);
+        u8g2_Engine.print(" RPM");
+
+        // I2C Safe Send
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            u8g2_Engine.sendBuffer(); 
+            xSemaphoreGive(i2cMutex);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+}
+
 void oled_CompassAndClockTaskCode(void * pvParameters) {
     // --- PERSISTENT SMOOTHING VARIABLES ---
     // These store the current "visual" position of the needles
@@ -880,8 +1023,12 @@ void oled_CompassAndClockTaskCode(void * pvParameters) {
         // D. Mission Clock
         drawMissionClock(u8g2_CompassAndClock, clockCenterX, verticalCenterY, finalFlightTime);
 
-        // 6. RENDER & WAIT
-        u8g2_CompassAndClock.sendBuffer();
+        // 6. RENDER & WAIT        
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            u8g2_CompassAndClock.sendBuffer(); // Only send if the bus is free
+            xSemaphoreGive(i2cMutex);
+        }
+
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
