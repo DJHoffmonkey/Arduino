@@ -702,20 +702,42 @@ void drawSafeLine(U8G2 &canvas, float x1, float y1, float x2, float y2) {
 void drawCompassFrame(U8G2 &canvas, float centerX, float centerY, float r) {
     canvas.setFont(u8g2_font_5x7_tr);
     
-    // Labels at 90% of radius to keep them just inside the physical stencil
-    canvas.drawStr(centerX - 2, centerY - (r * 0.9f), "N");
-    canvas.drawStr(centerX - 2, centerY + (r * 0.9f) + 6, "S");
-    canvas.drawStr(centerX + (r * 0.9f) - 2, centerY + 3, "E");
-    canvas.drawStr(centerX - (r * 0.9f) - 4, centerY + 3, "W");
+    // Get font metrics for perfect centering
+    int fHeight = canvas.getMaxCharHeight();
+    int fAscent = canvas.getAscent();
 
-    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
+    // 1. DYNAMIC LABELS (N, S, E, W)
+    // We calculate half-width for every label to ensure true center-alignment
+    
+    // NORTH: Top-center
+    int nW = canvas.getStrWidth("N");
+    canvas.drawStr(centerX - (nW / 2), centerY - (r * 0.85f), "N");
 
+    // SOUTH: Bottom-center (Using fHeight to offset from the bottom)
+    int sW = canvas.getStrWidth("S");
+    canvas.drawStr(centerX - (sW / 2), centerY + (r * 0.85f) + fAscent, "S");
+
+    // EAST: Right-middle (Using fAscent/2 for vertical centering)
+    int eW = canvas.getStrWidth("E");
+    canvas.drawStr(centerX + (r * 0.85f) - (eW / 2), centerY + (fAscent / 2), "E");
+
+    // WEST: Left-middle
+    int wW = canvas.getStrWidth("W");
+    canvas.drawStr(centerX - (r * 0.85f) - (wW / 2), centerY + (fAscent / 2), "W");
+
+    // 2. CENTER HUB (Scaled to 10% of radius, min 3px)
+    int hubSize = max(3, (int)(r * 0.1f));
+    canvas.drawBox((int)centerX - (hubSize / 2), (int)centerY - (hubSize / 2), hubSize, hubSize);
+
+    // 3. TICKS (Fully Parametric)
     for (int angle = 30; angle < 360; angle += 30) {
         if (angle % 90 == 0) continue; 
         float rad = (angle - 90.0f) * (M_PI / 180.0f);
         
         // Ticks are 15% of the radius
         float tLen = r * 0.15f;
+        
+        // Outer point to Inner point
         drawSafeLine(canvas, 
             centerX + r * cosf(rad), centerY + r * sinf(rad),
             centerX + (r - tLen) * cosf(rad), centerY + (r - tLen) * sinf(rad)
