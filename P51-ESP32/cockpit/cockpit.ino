@@ -99,11 +99,8 @@ struct Gauge {
 
 SemaphoreHandle_t i2cMutex;
 TaskHandle_t OLED_CompassAndClockTask;
-float sharedHeading = 0; // We use this to pass data between cores
 
 TFT_eSPI tft = TFT_eSPI();
-TFT_eSprite canvas = TFT_eSprite(&tft);
-TFT_eSprite ucSprite = TFT_eSprite(&tft);
 
 // Compass display is wide (128x64)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
@@ -300,31 +297,43 @@ struct Telemetry {
 volatile Telemetry aircraft;
 
 // --- Helper for the Gear Logic ---
-void updateGearState(bool gearSwitchPos) {
-    if (gearSwitchPos != aircraft.lastGearDown) {
-        aircraft.gearInTransit = true;
-        aircraft.gearTimer = millis();
-        aircraft.lastGearDown = gearSwitchPos;
+void updateGearPhysics() {
+  if (aircraft.gearInTransit) {
+    // Check if the 5-second cycle time has elapsed
+    if (millis() - aircraft.gearTimer >= aircraft.GEAR_CYCLE_TIME) {
+      aircraft.gearInTransit = false;
+      
+      // Toggle the physical state: if they were up, they are now down.
+      aircraft.gearDown = !aircraft.gearDown; 
+
+      if (isDebug) {
+        console.printf("DEBUG -> GEAR LOCKED: %s\n", aircraft.gearDown ? "DOWN" : "UP");
+      }
     }
-    if (aircraft.gearInTransit && (millis() - aircraft.gearTimer > aircraft.GEAR_CYCLE_TIME)) {
-        aircraft.gearInTransit = false;
-        aircraft.gearDown = gearSwitchPos;
-    }
+  }
 }
 
 void setup() {
   console.begin(115200);
   while (!console);
-  delay(500);
+  delay(200);
   if (isDebug) console.println("--- P-51 COCKPIT: BARE METAL START ---");
+
+  // --- Initialization Splash / Setup ---
+  // Create a temporary local canvas for setup tasks
+  TFT_eSprite canvas = TFT_eSprite(&tft); 
+  canvas.createSprite(80, 80);
+  // ... any code using canvas ...
+  canvas.deleteSprite();
+
+  TFT_eSprite ucSprite = TFT_eSprite(&tft);
+  ucSprite.createSprite(70, 22);
+  // ... any code using ucSprite ...
+  ucSprite.deleteSprite();
 
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
-  canvas.createSprite(80, 80); 
-  canvas.setTextDatum(MC_DATUM);
-  ucSprite.createSprite(70, 22); 
-  ucSprite.setTextDatum(MC_DATUM);  
   toAndFromFC.begin(115200, SERIAL_8N1, RX_FROM_FC, TX_TO_FC);
 
   i2cMutex = xSemaphoreCreateMutex();
@@ -419,11 +428,18 @@ bool parseMSP() {
     int gearIdx = (CH_GEAR - 1) * 2;
     if (size >= (gearIdx + 2)) {
       uint16_t newGearVal = payload[gearIdx] | (payload[gearIdx + 1] << 8);
-      bool newGearDown = (newGearVal > 1500);
-      if (isDebug && (newGearDown != aircraft.gearDown)) {
-        console.printf("DEBUG -> GEAR: %s (%d)\n", newGearDown ? "DOWN" : "UP", newGearVal);
+      bool switchPositionDown = (newGearVal > 1500); 
+
+      // If the switch position is DIFFERENT than our physical gear state 
+      // AND we aren't already mid-transit, start the sequence.
+      if (switchPositionDown != aircraft.gearDown && !aircraft.gearInTransit) {
+        aircraft.gearInTransit = true;
+        aircraft.gearTimer = millis();
+        
+        if (isDebug) {
+          console.printf("DEBUG -> GEAR COMMAND: %s (Moving...)\n", switchPositionDown ? "DOWN" : "UP");
+        }
       }
-      aircraft.gearDown = newGearDown;
     }
 
     // 3. FLAPS (Channel 7)
@@ -1528,6 +1544,8 @@ void loop() {
   // Logic: motorKv * current battery voltage * throttle percentage
   tachoGauge.data.tacho.rotationsPerMinute = (580.0f * aircraft.vBat * aircraft.throttle);
   fuelGauge.data.fuel.batteryVoltage       = aircraft.fuelPercent;
+
+  updateGearPhysics();
 
   // --- RENDER CALLS ---
   // Note: These draw functions now look at the updated .data members
