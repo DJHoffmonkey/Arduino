@@ -45,7 +45,7 @@ enum GaugeType {
   TYPE_GEAR
 };
 
-enum DisplayType { SCREEN_TFT, SCREEN_U8G2 };
+enum DisplayType { SCREEN_TFT, SCREEN_OLED_A, SCREEN_OLED_B };
 
 struct GaugeData {
   union {
@@ -77,6 +77,13 @@ struct GaugeData {
     struct { 
       float roll; 
     } bank;
+    struct {
+      int heading;
+      int homeHeading;
+    } compass;
+    struct {
+      uint32_t flightTime; // Milliseconds since mission start
+    } clock;
   };
 };
 
@@ -104,17 +111,40 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
 
 //Top line
-// Gauge compassGauge = {
-//   .label = "Magnetic Compass",
-//   .type = TYPE_COMPASS,
-//   .x = -99,
-//   .y = -99,
-//   .r = -99,
-//   .labelScale = 1.0f,
-//   .data = {.airspeed = {.mph = 0.0f}},
-//   .displayPtr = (void*)&u8g2_CompassAndClock,
-//   .screen = SCREEN_U8G2
-// };
+// --- COMPASS (Left Side of OLED A) ---
+Gauge compassGauge = {
+  .label = "Compass",
+  .type = TYPE_COMPASS,
+  .x = 28,
+  .y = 42,
+  .r = 21,
+  .labelScale = 1.0f,
+  .data = {
+    .compass = {
+      .heading = 0, 
+      .homeHeading = 0
+    }
+  },
+  .displayPtr = (void*)&u8g2_CompassAndClock,
+  .screen = SCREEN_OLED_A
+};
+
+// --- MISSION CLOCK (Right Side of OLED A) ---
+Gauge clockGauge = {
+  .label = "Mission Clock",
+  .type = TYPE_CLOCK,
+  .x = 89,
+  .y = 44,
+  .r = 16,
+  .labelScale = 0.8f,
+  .data = {
+    .clock = {
+      .flightTime = 0
+    }
+  },
+  .displayPtr = (void*)&u8g2_CompassAndClock,
+  .screen = SCREEN_OLED_A
+};
 
 
 // Column 1 (Left)
@@ -201,6 +231,30 @@ Gauge vsiGauge = {
   .data = {.vsi = {.verticalSpeed = 0.0f}},
   .displayPtr = (void*)&tft,
   .screen = SCREEN_TFT
+};
+
+Gauge tachoGauge = {
+  .label = "Tachometer",
+  .type = TYPE_TACHO,
+  .x = 32,
+  .y = 32,
+  .r = 28,
+  .labelScale = 1.0f,
+  .data = {.tacho = {.rotationsPerMinute = 0.0f, .maxScaleRotationsPerMinute = 3000.0f}},
+  .displayPtr = (void*)&u8g2_Engine,
+  .screen = SCREEN_OLED_B
+};
+
+Gauge fuelGauge = {
+  .label = "Battery",
+  .type = TYPE_FUEL,
+  .x = 96,
+  .y = 32,
+  .r = 28,
+  .labelScale = 1.0f,
+  .data = {.fuel = {.batteryVoltage = 16.8f}},
+  .displayPtr = (void*)&u8g2_Engine,
+  .screen = SCREEN_OLED_B
 };
 
 
@@ -1101,107 +1155,125 @@ void drawCompassFrame(U8G2 &canvas, float centerX, float centerY, float r) {
     }
 }
 
-void drawHeadingNeedle(U8G2 &canvas, float centerX, float centerY, float r, float heading) {
-    float rad = (heading - 90.0f) * (M_PI / 180.0f);
-    float cosH = cosf(rad), sinH = sinf(rad);
+void drawCompass(Gauge &g) {
+    if (g.screen != SCREEN_OLED_A) return;
+    U8G2 *canvas = (U8G2*)g.displayPtr;
     
-    // Width scales with radius (approx 10% of r)
+    float cx = (float)g.x;
+    float cy = (float)g.y;
+    float r  = (float)g.r;
+
+    // 1. DRAW FRAME (N, S, E, W + Ticks)
+    canvas->setFont(u8g2_font_5x7_tr);
+    int fAscent = canvas->getAscent();
+
+    // Labels
+    int nW = canvas->getStrWidth("N");
+    canvas->drawStr(cx - (nW / 2), cy - (r * 0.85f), "N");
+    int sW = canvas->getStrWidth("S");
+    canvas->drawStr(cx - (sW / 2), cy + (r * 0.85f) + fAscent, "S");
+    int eW = canvas->getStrWidth("E");
+    canvas->drawStr(cx + (r * 0.85f) - (eW / 2), cy + (fAscent / 2), "E");
+    int wW = canvas->getStrWidth("W");
+    canvas->drawStr(cx - (r * 0.85f) - (wW / 2), cy + (fAscent / 2), "W");
+
+    // Center Hub
+    int hubSize = max(3, (int)(r * 0.1f));
+    canvas->drawBox((int)cx - (hubSize / 2), (int)cy - (hubSize / 2), hubSize, hubSize);
+
+    // Ticks (30 degree increments)
+    for (int angle = 30; angle < 360; angle += 30) {
+        if (angle % 90 == 0) continue; 
+        float rad = (angle - 90.0f) * (M_PI / 180.0f);
+        float tLen = r * 0.15f;
+        drawSafeLine(*canvas, cx + r * cosf(rad), cy + r * sinf(rad),
+                              cx + (r - tLen) * cosf(rad), cy + (r - tLen) * sinf(rad));
+    }
+
+    // 2. DRAW HOME NEEDLE (The T-Bar)
+    float hRad = (g.data.turn.homeHeading - 90.0f) * (M_PI / 180.0f);
+    float hCos = cosf(hRad), hSin = sinf(hRad);
+    float hTipX = cx + (r * 0.65f) * hCos;
+    float hTipY = cy + (r * 0.65f) * hSin;
+    
+    // T-Bar Cap
+    float capW = r * 0.15f;
+    drawSafeLine(*canvas, hTipX + (-hSin * capW), hTipY + (hCos * capW), 
+                          hTipX - (-hSin * capW), hTipY - (hCos * capW));
+    // Stem
+    drawSafeLine(*canvas, cx, cy, hTipX, hTipY);
+
+    // 3. DRAW HEADING NEEDLE (The Parallel Rails)
+    float nRad = (g.data.turn.heading - 90.0f) * (M_PI / 180.0f);
+    float nCos = cosf(nRad), nSin = sinf(nRad);
     float width = r * 0.10f;
-    float gX = -sinH * width, gY = cosH * width; 
-
-    float tipR = r * 0.75f;
+    float offX = -nSin * width, offY = nCos * width; 
     float bodyR = r * 0.60f;
+    float tipR = r * 0.75f;
 
-    // Draw the parallel "rails"
-    for (int side = -1; side <= 1; side += 2) {
-        float rX = gX * side, rY = gY * side;
-        drawSafeLine(canvas, centerX - bodyR * cosH + rX, centerY - bodyR * sinH + rY, 
-                            centerX + bodyR * cosH + rX, centerY + bodyR * sinH + rY);
-    }
-
-    // Draw the Arrow Head
-    float tipX = centerX + tipR * cosH, tipY = centerY + tipR * sinH;
-    drawSafeLine(canvas, centerX + bodyR * cosH + gX, centerY + bodyR * sinH + gY, tipX, tipY);
-    drawSafeLine(canvas, centerX + bodyR * cosH - gX, centerY + bodyR * sinH - gY, tipX, tipY);
+    // Rails
+    drawSafeLine(*canvas, cx + offX - bodyR * nCos, cy + offY - bodyR * nSin, cx + offX + bodyR * nCos, cy + offY + bodyR * nSin);
+    drawSafeLine(*canvas, cx - offX - bodyR * nCos, cy - offY - bodyR * nSin, cx - offX + bodyR * nCos, cy - offY + bodyR * nSin);
     
-    // Draw the Base Cap
-    drawSafeLine(canvas, centerX - bodyR * cosH + gX, centerY - bodyR * sinH + gY, 
-                        centerX - bodyR * cosH - gX, centerY - bodyR * sinH - gY);
+    // Arrow Head
+    float tipX = cx + tipR * nCos, tipY = cy + tipR * nSin;
+    drawSafeLine(*canvas, cx + offX + bodyR * nCos, cy + offY + bodyR * nSin, tipX, tipY);
+    drawSafeLine(*canvas, cx - offX + bodyR * nCos, cy - offY + bodyR * nSin, tipX, tipY);
 }
 
-void drawHomeNeedle(U8G2 &canvas, float centerX, float centerY, float r, float heading) {
-    float rad = (heading - 90.0f) * (M_PI / 180.0f);
-    float cosH = cosf(rad), sinH = sinf(rad);
-    float pX = -sinH, pY = cosH;
 
-    float tipR = r * 0.65f;
-    float tailR = r * 0.30f;
-    float tipX = centerX + tipR * cosH;
-    float tipY = centerY + tipR * sinH;
+void drawMissionClock(Gauge &g) {
+  if (g.screen != SCREEN_OLED_A && g.screen != SCREEN_OLED_B) return;
+  U8G2 *canvas = (U8G2*)g.displayPtr;
 
-    // Thickness scales: 1px for small dials, 2px+ for larger ones
-    float thickness = max(1.0f, r * 0.05f); 
-    float startOffset = -(thickness / 2.0f);
+  float cx = (float)g.x;
+  float cy = (float)g.y;
+  float r  = (float)g.r;
+  uint32_t msTotal = g.data.clock.flightTime;
 
-    for (float i = 0; i < thickness; i += 1.0f) {
-        float shiftX = (startOffset + i) * pX;
-        float shiftY = (startOffset + i) * pY;
-        
-        drawSafeLine(canvas, centerX + shiftX, centerY + shiftY, tipX + shiftX, tipY + shiftY);
-        drawSafeLine(canvas, centerX + shiftX, centerY + shiftY, centerX - tailR * cosH + shiftX, centerY - tailR * sinH + shiftY);
-    }
+  canvas->setFont(u8g2_font_5x7_tr);
+  
+  // 1. LABELS (Your specific 10-7-5-2 layout)
+  canvas->drawStr(cx - 5, cy - 10, "10"); 
+  canvas->drawStr(cx - 3, cy + 16, "5");
+  canvas->drawStr(cx + 11, cy + 3,  "2"); 
+  canvas->drawStr(cx - 18, cy + 3,  "7");
 
-    // Cap width (T-bar) stays 15% of radius
-    float capWidth = r * 0.15f; 
-    drawSafeLine(canvas, tipX + (pX * capWidth), tipY + (pY * capWidth), 
-                         tipX - (pX * capWidth), tipY - (pY * capWidth));
-}
+  // 2. CLEAN DIAL DOTS (10-position increments)
+  for (int i = 0; i < 360; i += 36) { 
+    if (i == 0 || i == 90 || i == 180 || i == 270) continue;
+    float rad = (i - 90.0f) * (M_PI / 180.0f);
+    canvas->drawPixel((int)(cx + r * cosf(rad)), (int)(cy + r * sinf(rad)));
+  }
 
-void drawMissionClock(U8G2 &canvas, float centerX, float centerY, float r, uint32_t msTotal) {
-    canvas.setFont(u8g2_font_5x7_tr);
-    
-    // 1. LABELS (10-minute dial)
-    canvas.drawStr(centerX - 5, centerY - 10, "10"); 
-    canvas.drawStr(centerX - 3, centerY + 16, "5");
-    canvas.drawStr(centerX + 11, centerY + 3,  "2"); 
-    canvas.drawStr(centerX - 18, centerY + 3,  "7");
+  // 3. MISSION MINUTES HAND (10 Min per Lap)
+  float minMS = (float)(msTotal % 600000);
+  float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
+  float minTipX = cx + (r * 0.65f) * cosf(minRad);
+  float minTipY = cy + (r * 0.65f) * sinf(minRad);
+  
+  // Hand Thickness Logic
+  float mPX = -sinf(minRad), mPY = cosf(minRad);
+  for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
+    drawSafeLine(*canvas, cx + (mPX * i), cy + (mPY * i), 
+                          minTipX + (mPX * i), minTipY + (mPY * i));
+  }
 
-    // 2. CLEAN DIAL DOTS (Skip positions 0, 90, 180, 270 degrees)
-    for (int i = 0; i < 360; i += 36) { 
-        if (i == 0 || i == 90 || i == 180 || i == 270) continue;
-        float rad = (i - 90.0f) * (M_PI / 180.0f);
-        canvas.drawPixel((int)(centerX + r * cosf(rad)), (int)(centerY + r * sinf(rad)));
-    }
+  // 4. BALANCED SECONDS NEEDLE (1 Min per Lap - 10Hz Beat)
+  uint32_t smoothSecMs = (msTotal / 100) * 100; 
+  float secMS = (float)(smoothSecMs % 60000);
+  float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
+  
+  // Tip and Tail
+  float secTipX = cx + (r - 1.0f) * cosf(secRad);
+  float secTipY = cy + (r - 1.0f) * sinf(secRad);
+  float secTailX = cx - (4.0f * cosf(secRad));
+  float secTailY = cy - (4.0f * sinf(secRad));
+  
+  drawSafeLine(*canvas, secTailX, secTailY, secTipX, secTipY);
 
-    // --- 3. MISSION MINUTES HAND (Thick/Bold - 10 Min Lap) ---
-    float minMS = (float)(msTotal % 600000);
-    float minRad = (minMS * 0.0006f - 90.0f) * (M_PI / 180.0f);
-    float minTipX = centerX + (r * 0.65f) * cosf(minRad);
-    float minTipY = centerY + (r * 0.65f) * sinf(minRad);
-    
-    float mPX = -sinf(minRad), mPY = cosf(minRad);
-    for (float i = -0.5f; i <= 0.5f; i += 1.0f) {
-        drawSafeLine(canvas, centerX + (mPX * i), centerY + (mPY * i), minTipX + (mPX * i), minTipY + (mPY * i));
-    }
-
-    // --- 4. BALANCED SECONDS NEEDLE (Thin/Long - 1 Min Lap) ---
-    uint32_t smoothSecMs = (msTotal / 100) * 100; // 10Hz "High-Beat"
-    float secMS = (float)(smoothSecMs % 60000);
-    float secRad = (secMS * 0.006f - 90.0f) * (M_PI / 180.0f);
-    
-    // Tip (Forward)
-    float secTipX = centerX + (r - 1.0f) * cosf(secRad);
-    float secTipY = centerY + (r - 1.0f) * sinf(secRad);
-    
-    // Tail (Backward - approx 3-4 pixels)
-    float secTailX = centerX - (4.0f * cosf(secRad));
-    float secTailY = centerY - (4.0f * sinf(secRad));
-    
-    // Draw the full needle from Tail to Tip
-    drawSafeLine(canvas, secTailX, secTailY, secTipX, secTipY);
-
-    // 5. CENTER HUB
-    canvas.drawBox((int)centerX - 1, (int)centerY - 1, 3, 3);
+  // 5. CENTER HUB
+  canvas->drawBox((int)cx - 1, (int)cy - 1, 3, 3);
 }
 
 void drawTacho(U8G2 &canvas, float centerX, float centerY, float r, float rpm, float maxRpm) {
@@ -1313,51 +1385,17 @@ void drawFuelGauge(U8G2 &canvas, float centerX, float centerY, float r, float pe
 
 
 void updateCompassAndClockDisplay() {
-  static float visualHeading = 0.0f;
-  static float visualHome = 0.0f;
-  const float smoothingAlpha = 0.15f; 
-  
-  // REMOVED: static uint32_t missionStartTime = 0; (Using global instead)
-  static bool wasArmed = false; 
+  // 1. Update the data members from your global telemetry
+  compassGauge.data.compass.heading = (int)heading;
+  compassGauge.data.compass.homeHeading = (int)dirToHome;
+  clockGauge.data.clock.flightTime = finalFlightTime;
 
-  // --- 1. SMOOTHING LOGIC ---
-  float deltaHeading = sharedHeading - visualHeading;
-  if (deltaHeading > 180.0f)  deltaHeading -= 360.0f;
-  if (deltaHeading < -180.0f) deltaHeading += 360.0f;
-  visualHeading += deltaHeading * smoothingAlpha;
-
-  float deltaHome = (float)dirToHome - visualHome;
-  if (deltaHome > 180.0f)  deltaHome -= 360.0f;
-  if (deltaHome < -180.0f) deltaHome += 360.0f;
-  visualHome += deltaHome * smoothingAlpha;
-
-  // --- 2. MISSION TIMER LOGIC ---
-  if (isArmed) {
-      if (!wasArmed) { 
-          missionStartTime = millis(); // Updates the GLOBAL variable
-          wasArmed = true; 
-      }
-      finalFlightTime = (millis() - missionStartTime); 
-  } else { 
-      wasArmed = false; 
-  }
-
-  // --- 3. PARAMETRIC CONSTANTS ---
-  const float compassR = 22.0f; 
-  const float clockR   = 16.0f; 
-  const float compassX = 28.0f;
-  const float clockX   = 88.0f; 
-  const float centerY  = 32.0f;
-
-  // --- 4. DRAW & SEND ---
+  // 2. Render sequence
   u8g2_CompassAndClock.clearBuffer();
-
-  drawCompassFrame(u8g2_CompassAndClock, compassX, centerY, compassR);
-  drawHomeNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHome);
-  drawHeadingNeedle(u8g2_CompassAndClock, compassX, centerY, compassR, visualHeading);
   
-  drawMissionClock(u8g2_CompassAndClock, clockX, centerY, clockR, finalFlightTime);
-
+  drawCompass(compassGauge);
+  drawMissionClock(clockGauge);
+  
   u8g2_CompassAndClock.sendBuffer(); 
 }
 
@@ -1389,21 +1427,25 @@ void updateEngineDisplay() {
 
 
 void oled_MasterTask(void * pvParameters) {
-    for(;;) {
-        // Step 1: Update Screen 0x3C
-        updateCompassAndClockDisplay();
-        
-        // Step 2: Small breather for the I2C bus hardware (optional but safe)
-        vTaskDelay(pdMS_TO_TICKS(5));
+  for(;;) {
+      // Step 1: Compass & Clock (0x3C)
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdPASS) {
+          updateCompassAndClockDisplay(); // This will call drawCompass(gCompass)
+          xSemaphoreGive(i2cMutex);
+      }
+      
+      vTaskDelay(pdMS_TO_TICKS(5)); 
 
-        // Step 3: Update Screen 0x3D
-        updateEngineDisplay();
+      // Step 2: Engine Vitals (0x3D)
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdPASS) {
+          updateEngineDisplay(); // This will call drawFuel(gFuel), etc.
+          xSemaphoreGive(i2cMutex);
+      }
 
-        // Step 4: Total loop frequency (approx 20-25Hz)
-        vTaskDelay(pdMS_TO_TICKS(40)); 
-    }
+      // Step 3: Loop Frequency (approx 20-25Hz)
+      vTaskDelay(pdMS_TO_TICKS(35)); 
+  }
 }
-
 
 void loop() {
   static unsigned long lastFrame = 0;
@@ -1426,11 +1468,11 @@ void loop() {
     updateMSP();
   }
 
-  sharedHeading = heading; // Update the value for the other core to see
-
-  //drawGearStatus(140,220);
-
-
+  compassGauge.data.compass.heading = (int)heading;
+  compassGauge.data.compass.homeHeading = (int)dirToHome;
+    
+  // Sync the Clock Gauge Data
+  clockGauge.data.clock.flightTime = finalFlightTime;
 
   // Column 1 (Left) - Airspeed & Altimeter
   airspeedGauge.data.airspeed.mph = airSpeed;
@@ -1440,8 +1482,8 @@ void loop() {
   drawAltimeter(altimeterGauge);
 
   // Column 2 (Center) - Turn, Bank & Gear
-  turnGauge.data.turn.heading = heading;
-  turnGauge.data.turn.homeHeading = dirToHome;
+  turnGauge.data.turn.heading = (int)heading;
+  turnGauge.data.turn.homeHeading = (int)dirToHome;
   drawTurn(turnGauge);
 
   bankGauge.data.bank.roll = roll;
