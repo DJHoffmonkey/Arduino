@@ -32,17 +32,27 @@
 #define isENGINE_DISPLAY_ACTIVE true
 
 enum GaugeType { 
-  TYPE_VSI, 
-  TYPE_HORIZON, 
+  TYPE_COMPASS,
+  TYPE_CLOCK,
+  TYPE_AIRSPEED,
   TYPE_ALTIMETER, 
+  TYPE_TURN,
+  TYPE_BANK,  
+  TYPE_HORIZON, 
+  TYPE_VSI, 
   TYPE_TACHO,
-  TYPE_FUEL
+  TYPE_FUEL,
+  TYPE_GEAR
 };
 
 enum DisplayType { SCREEN_TFT, SCREEN_U8G2 };
 
 struct GaugeData {
   union {
+    struct {
+      int heading;
+      int homeHeading;
+    } turn;
     struct { 
       float verticalSpeed; 
     } vsi;
@@ -55,8 +65,18 @@ struct GaugeData {
       float pressure; 
     } altimeter;
     struct { 
+      float roll; 
+      float pitch; 
+    } horizon;
+    struct { 
       float batteryVoltage; 
     } fuel;
+    struct { 
+      float mph; 
+    } airspeed;
+    struct { 
+      float roll; 
+    } bank;
   };
 };
 
@@ -83,16 +103,29 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8
 // Engine display is tall (64x128)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
 
+//Top line
+// Gauge compassGauge = {
+//   .label = "Magnetic Compass",
+//   .type = TYPE_COMPASS,
+//   .x = -99,
+//   .y = -99,
+//   .r = -99,
+//   .labelScale = 1.0f,
+//   .data = {.airspeed = {.mph = 0.0f}},
+//   .displayPtr = (void*)&u8g2_CompassAndClock,
+//   .screen = SCREEN_U8G2
+// };
 
-// VSI INITIALISATION. VSI is sparse, so we can go big on the labels
-Gauge vsiGauge = {
-  .label = "Vertical Speed Indicator",
-  .type = TYPE_VSI,
-  .x = 254, 
-  .y = 157,
-  .r = 39,
+
+// Column 1 (Left)
+Gauge airspeedGauge = {
+  .label = "Airspeed",
+  .type = TYPE_AIRSPEED,
+  .x = 32,
+  .y = 38,
+  .r = 40,
   .labelScale = 1.0f,
-  .data = {.vsi = {.verticalSpeed = 0.0f}},
+  .data = {.airspeed = {.mph = 0.0f}},
   .displayPtr = (void*)&tft,
   .screen = SCREEN_TFT
 };
@@ -100,18 +133,75 @@ Gauge vsiGauge = {
 Gauge altimeterGauge = {
   .label = "Altimeter",
   .type = TYPE_ALTIMETER,
-  .x = 240,
-  .y = 60, 
-  .r = 40, 
-  .labelScale = 1.2f,
+  .x = 32,
+  .y = 134,
+  .r = 40,
+  .labelScale = 1.0f,
   .data = {.altimeter = {.altitude = 0.0f, .pressure = 1013.25f}},
   .displayPtr = (void*)&tft,
   .screen = SCREEN_TFT
 };
 
+// Column 2 (Center)
+Gauge turnGauge = {
+  .label = "Turn Coordinator",
+  .type = TYPE_TURN,
+  .x = 137,
+  .y = 38,
+  .r = 36,
+  .labelScale = 1.0f,
+  .data = {.turn = {.heading = 0, .homeHeading = 0}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
 
+Gauge bankGauge = {
+  .label = "Bank Indicator",
+  .type = TYPE_BANK,
+  .x = 140,
+  .y = 158,
+  .r = 39,
+  .labelScale = 1.0f,
+  .data = {.bank = {.roll = 0.0f}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
 
+Gauge gearGauge = {
+  .label = "Gear Status",
+  .type = TYPE_GEAR,
+  .x = 140,
+  .y = 210,
+  .r = 20,
+  .labelScale = 1.0f,
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
 
+// Column 3 (Right)
+Gauge horizonGauge = {
+  .label = "Artificial Horizon",
+  .type = TYPE_HORIZON,
+  .x = 248,
+  .y = 45,
+  .r = 45,
+  .labelScale = 1.0f,
+  .data = {.horizon = {.roll = 0.0f, .pitch = 0.0f}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
+
+Gauge vsiGauge = {
+  .label = "VSI",
+  .type = TYPE_VSI,
+  .x = 254, 
+  .y = 157,
+  .r = 37,
+  .labelScale = 1.0f,
+  .data = {.vsi = {.verticalSpeed = 0.0f}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
 
 
 // --- SHARED DATA ---
@@ -406,18 +496,28 @@ float getAirspeedAngle(float mph) {
   return deg;
 }
 
-void drawAirspeed(int x, int y, float speed) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx = 40, cy = 40;
+void drawAirspeed(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  canvas.fillSmoothCircle(cx, cy, 33, P51_EARTH); 
-  canvas.fillSmoothCircle(cx, cy, 24, 0x18C3); 
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
+
+  // 1. Background Layers
+  canvas.fillSprite(P51_CHARCOAL);
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.825), P51_EARTH); 
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.6), 0x18C3); 
 
   canvas.setTextColor(P51_RADIUM);
   
-  // Custom numbers as requested
+  // 2. Custom numbers and tick logic
   int labels[] = {10, 20, 30, 50, 70, 90};
   int labelCount = 6;
+  int font = (g.r > 35) ? 2 : 1;
 
   for (int i = 0; i <= 100; i += 2) {
     float angleDeg = getAirspeedAngle((float)i);
@@ -427,138 +527,268 @@ void drawAirspeed(int x, int y, float speed) {
     for(int k=0; k<labelCount; k++) { if(i == labels[k]) isLabel = true; }
 
     if (isLabel) {
-      int tx = cx + 24 * cos(rad); // Nudged in 1px to avoid bezel
-      int ty = cy + 24 * sin(rad);
-      canvas.drawCentreString(String(i), tx, ty - 4, 2);
-      canvas.drawLine(cx + 28 * cos(rad), cy + 28 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+      // Numbers - Nudged in to avoid bezel
+      int tx = cx + (int)(g.r * 0.6 * cos(rad)); 
+      int ty = cy + (int)(g.r * 0.6 * sin(rad));
+      canvas.drawCentreString(String(i), tx, ty - 4, font);
+      // Major Ticks
+      canvas.drawLine(cx + (int)(g.r * 0.7 * cos(rad)), cy + (int)(g.r * 0.7 * sin(rad)), 
+                      cx + (int)(g.r * 0.825 * cos(rad)), cy + (int)(g.r * 0.825 * sin(rad)), P51_RADIUM);
     } else if (i % 10 == 0 || i == 0) {
-      canvas.drawLine(cx + 29 * cos(rad), cy + 29 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+      // Mid Ticks
+      canvas.drawLine(cx + (int)(g.r * 0.725 * cos(rad)), cy + (int)(g.r * 0.725 * sin(rad)), 
+                      cx + (int)(g.r * 0.825 * cos(rad)), cy + (int)(g.r * 0.825 * sin(rad)), P51_RADIUM);
     } else {
-      canvas.drawLine(cx + 31 * cos(rad), cy + 31 * sin(rad), cx + 33 * cos(rad), cy + 33 * sin(rad), P51_RADIUM);
+      // Minor Ticks
+      canvas.drawLine(cx + (int)(g.r * 0.775 * cos(rad)), cy + (int)(g.r * 0.775 * sin(rad)), 
+                      cx + (int)(g.r * 0.825 * cos(rad)), cy + (int)(g.r * 0.825 * sin(rad)), P51_RADIUM);
     }
   }
 
+  // 3. Labels
   canvas.setTextColor(P51_RADIUM);
-  canvas.drawCentreString("MPH", cx, cy - 12, 1); 
+  canvas.drawCentreString("MPH", cx, cy - (int)(g.r * 0.3), 1); 
 
-  float needleAngle = getAirspeedAngle(constrain(speed, 0, 100));
+  // 4. Needle Logic
+  float speedValue = g.data.airspeed.mph;
+  float needleAngle = getAirspeedAngle(constrain(speedValue, 0, 100));
   float sRad = needleAngle * (PI / 180.0);
   
+  int nLen = (int)(g.r * 0.8);
+
   // Shadow
-  canvas.drawLine(cx+1, cy+1, cx+1 + 32*cos(sRad), cy+1 + 32*sin(sRad), 0x0841);
+  canvas.drawLine(cx + 1, cy + 1, cx + 1 + (int)(nLen * cos(sRad)), cy + 1 + (int)(nLen * sin(sRad)), 0x0841);
   // Needle
-  canvas.drawWideLine(cx, cy, cx + 32*cos(sRad), cy + 32*sin(sRad), 2, TFT_WHITE, 0x18C3);
+  canvas.drawWideLine(cx, cy, cx + (int)(nLen * cos(sRad)), cy + (int)(nLen * sin(sRad)), 2, TFT_WHITE, 0x18C3);
 
   canvas.fillCircle(cx, cy, 3, TFT_BLACK);
-  canvas.pushSprite(x - 40, y - 40);
+
+  // 5. Final Push
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
 }
 
-void drawHorizon(int x, int y, float rll, float ptch) {
-  canvas.fillSprite(P51_SKY);
-  int cx = 40, cy = 40, cr = 36;
+void drawPoshHorizon(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  // 1. Moving World (Sky/Earth)
-  float radRoll = rll * (PI / 180.0);
-  float tanRoll = tan(radRoll);
-  float pOffset = constrain(ptch * 1.2, -30, 30);
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
 
-  for (int i = -40; i <= 40; i++) {
+  // 1. COLORS
+  uint16_t groundColor = 0x9442; // Saddle Brown
+  uint16_t skyColor = 0x5D9B;    // Steel Blue
+  
+  float rll = g.data.horizon.roll;
+  float ptch = g.data.horizon.pitch;
+  float radRoll = rll * (PI / 180.0f);
+  float tanRoll = tan(radRoll);
+  float pOffset = constrain(ptch * 1.5f, -35.0f, 35.0f); // Increased sensitivity slightly
+
+  // 2. DRAW MOVING HORIZON (Sky/Ground)
+  canvas.fillSprite(skyColor);
+  for (int i = -cx; i <= cx; i++) {
     float horizonY = cy - pOffset + (i * tanRoll);
-    if (horizonY < 80) {
-      canvas.drawLine(cx + i, constrain(horizonY, 0, 80), cx + i, 80, P51_EARTH);
+    if (horizonY < diameter) {
+      canvas.drawLine(cx + i, (int)constrain(horizonY, 0.0f, (float)diameter), cx + i, diameter, groundColor);
     }
   }
 
-  // 2. JUST THE TDC TRIANGLE (Fixed at top)
-  // x-coords: cx-4, cx+4, cx | y-coords: 5, 5, 13
-  canvas.fillTriangle(cx - 3, 3, cx + 3, 3, cx, 3+3+1, TFT_YELLOW);
+  // 3. PITCH LADDER (White lines on the moving horizon)
+  canvas.setTextColor(TFT_WHITE);
+  for (int p = -20; p <= 20; p += 5) {
+    if (p == 0) continue; // The actual horizon line
+    float pitchY = cy - pOffset - (p * 1.5f); // Sync with pOffset multiplier
+    
+    // Rotate and draw pitch lines
+    int lineW = (p % 10 == 0) ? 15 : 8; // Longer lines for 10, 20
+    float cosR = cos(radRoll);
+    float sinR = sin(radRoll);
 
-  // 3. Yellow Bank Ticks
-  for (int a = -60; a <= 60; a += 30) {
-    if (a == 0) continue; 
-    float tr = (a - 90) * (PI / 180.0);
-    canvas.drawLine(cx + (cr-4)*cos(tr), cy + (cr-4)*sin(tr), 
-                    cx + cr*cos(tr), cy + cr*sin(tr), TFT_YELLOW);
+    int xStart = cx - (lineW * cosR);
+    int yStart = pitchY - (lineW * sinR);
+    int xEnd = cx + (lineW * cosR);
+    int yEnd = pitchY + (lineW * sinR);
+
+    if (pitchY > 5 && pitchY < diameter - 5) {
+       canvas.drawLine(xStart, yStart, xEnd, yEnd, TFT_WHITE);
+       if (p % 10 == 0) {
+         canvas.setTextSize(1);
+         canvas.setCursor(xEnd + 2, yEnd - 4);
+         canvas.print(abs(p));
+       }
+    }
   }
 
-  // 4. THE TRIDENT (Floating Pin & Wings)
-  canvas.fillCircle(cx, cy - 1, 2, TFT_YELLOW); 
-  canvas.fillRect(cx - 10 - 18, cy - 1.5, 18, 3, TFT_YELLOW); // Left
-  canvas.fillRect(cx + 10, cy - 1.5, 18, 3, TFT_YELLOW);  // Right
+  // 4. TOP BANK SCALE (Static)
+  int angles[] = {-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60};
+  for (int i = 0; i < 11; i++) {
+    float aRad = (angles[i] - 90) * (PI / 180.0f);
+    int len = (angles[i] % 15 == 0) ? 5 : 3;
+    canvas.drawLine(cx + (g.r-len)*cos(aRad), cy + (g.r-len)*sin(aRad), 
+                    cx + g.r*cos(aRad), cy + g.r*sin(aRad), TFT_WHITE);
+  }
 
-  // 5. Text
-  canvas.setTextColor(0x2104); 
-  canvas.drawCentreString("AN 5736-1A", cx, 72, 1);
+  // 5. THE MINIATURE AIRCRAFT (Fixed Yellow "Wings" and Center Dot)
+  // Center Dot
+  canvas.fillCircle(cx, cy, 2, TFT_YELLOW);
+  // Left Wing
+  canvas.fillRect(cx - 24, cy - 1, 14, 3, TFT_YELLOW); 
+  canvas.drawFastVLine(cx - 10, cy - 1, 5, TFT_YELLOW); // Down-turned tip
+  // Right Wing
+  canvas.fillRect(cx + 10, cy - 1, 14, 3, TFT_YELLOW);
+  canvas.drawFastVLine(cx + 10, cy - 1, 5, TFT_YELLOW);
 
-  canvas.pushSprite(x - 40, y - 40);
+  // 6. TDC TRIANGLE (Sky Reference)
+  canvas.fillTriangle(cx - 3, 5, cx + 3, 5, cx, 11, TFT_YELLOW);
+
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
 }
 
-void drawAltimeter(int x, int y, float alt) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx = 40, cy = 40;
+void drawHorizon(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  // 1. Background Layers
-  canvas.fillSmoothCircle(cx, cy, 33, P51_EARTH); // Aged ring
-  canvas.fillSmoothCircle(cx, cy, 22, 0x18C3);    // Sunken center
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
+  int cr = (int)(g.r * 0.9); // Indicator ring radius
+
+  // 1. Moving World (Sky/Earth)
+  canvas.fillSprite(P51_SKY);
+  
+  float rll = g.data.horizon.roll;
+  float ptch = g.data.horizon.pitch;
+  
+  float radRoll = rll * (PI / 180.0f);
+  float tanRoll = tan(radRoll);
+  // Your exact pitch constraint and multiplier
+  float pOffset = constrain(ptch * 1.2f, -30.0f, 30.0f);
+
+  for (int i = -cx; i <= cx; i++) {
+    float horizonY = cy - pOffset + (i * tanRoll);
+    if (horizonY < diameter) {
+      canvas.drawLine(cx + i, (int)constrain(horizonY, 0.0f, (float)diameter), cx + i, diameter, P51_EARTH);
+    }
+  }
+
+  // 2. TDC TRIANGLE (Fixed at top - Yellow)
+  // Scaled slightly for radius
+  canvas.fillTriangle(cx - 3, 5, cx + 3, 5, cx, 9, TFT_YELLOW);
+
+  // 3. Yellow Bank Ticks (-60, -30, 30, 60)
+  for (int a = -60; a <= 60; a += 30) {
+    if (a == 0) continue; 
+    float tr = (a - 90.0f) * (PI / 180.0f);
+    canvas.drawLine(cx + (int)((cr - 4) * cos(tr)), cy + (int)((cr - 4) * sin(tr)), 
+                    cx + (int)(cr * cos(tr)), cy + (int)(cr * sin(tr)), TFT_YELLOW);
+  }
+
+  // 4. THE TRIDENT (Static Reference Wings)
+  canvas.fillCircle(cx, cy - 1, 2, TFT_YELLOW); 
+  // Left Wing
+  canvas.fillRect(cx - 28, cy - 1, 18, 3, TFT_YELLOW); 
+  // Right Wing
+  canvas.fillRect(cx + 10, cy - 1, 18, 3, TFT_YELLOW);
+
+  // 5. Text (Instrument ID)
+  canvas.setTextColor(0x2104); 
+  canvas.drawCentreString("AN 5736-1A", cx, diameter - 8, 1);
+
+  // 6. Final Push to (253, 54)
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
+}
+
+void drawAltimeter(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
+  
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
+
+  // 1. Background Layers (Restored Aged Look)
+  canvas.fillSprite(P51_CHARCOAL);
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.825), P51_EARTH); // Aged ring
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.55), 0x18C3);    // Sunken center
 
   // 2. Dial Markings
   canvas.setTextColor(P51_RADIUM);
+  int font = (g.r * g.labelScale > 35) ? 2 : 1;
+  int vPad = (font == 2) ? 4 : 2;
+
   for (int i = 0; i < 10; i++) {
     float angle = (i * 36 - 90) * (PI / 180.0);
     
     // Numbers
-    int tx = cx + 25 * cos(angle);
-    int ty = cy + 25 * sin(angle);
-    canvas.drawCentreString(String(i), tx, ty - 4, 2);
+    int tx = cx + (int)(g.r * 0.625 * cos(angle));
+    int ty = cy + (int)(g.r * 0.625 * sin(angle));
+    canvas.drawCentreString(String(i), tx, ty - vPad, font);
     
     // Major Ticks (100ft)
-    canvas.drawLine(cx + 29 * cos(angle), cy + 29 * sin(angle), 
-                    cx + 33 * cos(angle), cy + 33 * sin(angle), P51_RADIUM);
+    canvas.drawLine(cx + (int)(g.r * 0.725 * cos(angle)), cy + (int)(g.r * 0.725 * sin(angle)), 
+                    cx + (int)(g.r * 0.825 * cos(angle)), cy + (int)(g.r * 0.825 * sin(angle)), P51_RADIUM);
     
-    // Minor Ticks (20ft) - FIXED MATH HERE
+    // Minor Ticks (20ft)
     for (int j = 1; j < 5; j++) {
       float subAngle = (i * 36 + j * 7.2 - 90) * (PI / 180.0);
-      canvas.drawLine(cx + 31 * cos(subAngle), cy + 31 * sin(subAngle), 
-                      cx + 33 * cos(subAngle), cy + 33 * sin(subAngle), P51_RADIUM);
+      canvas.drawLine(cx + (int)(g.r * 0.775 * cos(subAngle)), cy + (int)(g.r * 0.775 * sin(subAngle)), 
+                      cx + (int)(g.r * 0.825 * cos(subAngle)), cy + (int)(g.r * 0.825 * sin(subAngle)), P51_RADIUM);
     }
   }
 
-  // 3. Kollsman Window (Tiny 3-digit)
-  int kx = cx + 16, ky = cy - 6;
-  canvas.fillRect(kx, ky, 14, 10, TFT_BLACK); 
-  canvas.drawRect(kx, ky, 14, 10, 0x4228); 
+  // 3. Kollsman Window (Parametric Position)
+  int kw = (int)(g.r * 0.35);
+  int kh = (int)(g.r * 0.25);
+  int kx = cx + (int)(g.r * 0.4);
+  int ky = cy - (int)(g.r * 0.15);
+  canvas.fillRect(kx, ky, kw, kh, TFT_BLACK); 
+  canvas.drawRect(kx, ky, kw, kh, 0x4228); 
   canvas.setTextColor(TFT_WHITE);
-  canvas.drawCentreString("299", kx + 7, ky + 1, 1); 
+  canvas.drawCentreString("299", kx + (kw/2), ky + 1, 1); 
 
   // 4. Labels
   canvas.setTextColor(P51_RADIUM);
-  canvas.drawCentreString("ALT", cx, cy + 6, 1);
+  canvas.drawCentreString("ALT", cx, cy + (int)(g.r * 0.15), 1);
   canvas.setTextColor(0x2104); 
-  canvas.drawCentreString("1000 FEET", cx, cy - 3, 1);
+  canvas.drawCentreString("1000 FEET", cx, cy - (int)(g.r * 0.075), 1);
 
-  // 5. Hand Logic (Using fmod to keep rotations clean)
+  // 5. Hand Logic
+  float alt = g.data.altimeter.altitude;
   float deg100   = (fmod(alt, 1000.0) / 1000.0) * 360.0;
   float deg1000  = (fmod(alt, 10000.0) / 10000.0) * 360.0;
   float deg10000 = (fmod(alt, 100000.0) / 100000.0) * 360.0;
 
-  // 6. Draw Hands (Ordering is vital)
-  drawAltHand(cx, cy, deg10000, 31, 1, true);  // 10k Crow's Foot
-  drawAltHand(cx, cy, deg1000, 20, 4, false);  // 1k Fat Hand
-  drawAltHand(cx, cy, deg100, 34, 2, false);   // 100ft Long Hand
+  // 6. Draw Hands (Passing the canvas pointer to the helper)
+  drawAltHand(canvas, cx, cy, deg10000, (int)(g.r * 0.775), 1, true);  // 10k Crow's Foot
+  drawAltHand(canvas, cx, cy, deg1000,  (int)(g.r * 0.5),   4, false); // 1k Fat Hand
+  drawAltHand(canvas, cx, cy, deg100,   (int)(g.r * 0.85),  2, false); // 100ft Long Hand
 
   canvas.fillCircle(cx, cy, 3, TFT_BLACK); 
-  canvas.pushSprite(x - 40, y - 40);
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
 }
 
-// Ensure this helper function is exactly as written below:
-void drawAltHand(int cx, int cy, float deg, int len, int width, bool is10k) {
+// Updated helper to take the sprite reference
+void drawAltHand(TFT_eSprite &canvas, int cx, int cy, float deg, int len, int width, bool is10k) {
   float rad = (deg - 90.0) * (PI / 180.0);
-  int px = cx + len * cos(rad);
-  int py = cy + len * sin(rad);
+  int px = cx + (int)(len * cos(rad));
+  int py = cy + (int)(len * sin(rad));
   
   if (is10k) {
     canvas.drawLine(cx, cy, px, py, TFT_WHITE);
-    // Crow's foot triangle tip
     float x1 = cx + (len - 5) * cos(rad + 0.2);
     float y1 = cy + (len - 5) * sin(rad + 0.2);
     float x2 = cx + (len - 5) * cos(rad - 0.2);
@@ -569,34 +799,41 @@ void drawAltHand(int cx, int cy, float deg, int len, int width, bool is10k) {
   }
 }
 
-void drawTurn(int x, int y, float heading, float homeBearing) {
-  canvas.fillSprite(P51_CHARCOAL); 
-  int cx = 40, cy = 40;
+void drawTurn(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
+  
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
   int winY = cy - 18; 
   int winH = 22;
   int winLeft = cx - 28;
 
+  canvas.fillSprite(P51_CHARCOAL); 
+
   // 1. Internal Shadow
   canvas.fillRect(winLeft, winY, 56, winH, 0x0841); 
 
-  // --- NEW: GREEN HOME BAR LOGIC ---
-  // Calculate shortest distance to home bearing
+  // 2. GREEN HOME BAR LOGIC
+  float heading = (float)g.data.turn.heading;
+  float homeBearing = (float)g.data.turn.homeHeading;
+
   float homeDelta = homeBearing - heading;
   if (homeDelta > 180) homeDelta -= 360;
   if (homeDelta < -180) homeDelta += 360;
 
-  // Map homeDelta to the drum curve
   float homeRad = homeDelta * (PI / 180.0);
   float homeX = cx + (sin(homeRad) * 45); 
 
-  // Draw the green bar if it's within the window view
   if (homeX > winLeft && homeX < winLeft + 56) {
-    // A bright "Radium" Green for the home marker
     canvas.fillRect((int)homeX - 2, winY + 1, 4, winH - 2, 0x07E0); 
   }
-  // --- END HOME BAR ---
 
-  // 2. The Drum Logic
+  // 3. The Drum Logic
   canvas.setTextColor(P51_RADIUM);
   float startAngle = floor(heading / 5.0) * 5.0;
 
@@ -618,13 +855,13 @@ void drawTurn(int x, int y, float heading, float homeBearing) {
     }
   }
 
-  // 3. Masking (Paint over the bleed)
-  canvas.fillRect(0, 0, 80, winY, P51_CHARCOAL);             
-  canvas.fillRect(0, winY + winH, 80, 80 - (winY+winH), P51_CHARCOAL); 
+  // 4. Masking (Paint over the bleed)
+  canvas.fillRect(0, 0, diameter, winY, P51_CHARCOAL);             
+  canvas.fillRect(0, winY + winH, diameter, diameter - (winY + winH), P51_CHARCOAL); 
   canvas.fillRect(0, winY, winLeft, winH, P51_CHARCOAL);     
-  canvas.fillRect(winLeft + 56, winY, 80 - (winLeft+56), winH, P51_CHARCOAL); 
+  canvas.fillRect(winLeft + 56, winY, diameter - (winLeft + 56), winH, P51_CHARCOAL); 
 
-  // 4. Stationary Elements
+  // 5. Stationary Elements
   canvas.drawRect(winLeft, winY, 56, winH, 0x4228); 
   // Center Lubber Line (White)
   canvas.fillRect(cx - 1, winY - 3, 2, winH + 6, TFT_WHITE); 
@@ -632,34 +869,55 @@ void drawTurn(int x, int y, float heading, float homeBearing) {
   canvas.setTextColor(0x4228);
   canvas.drawCentreString("DIREC.GYRO", cx, cy + 10, 1);
   canvas.drawCentreString("AN 5735-1A", cx, cy + 20, 1);
-  canvas.pushSprite(x - 40, y - 40);
+
+  // 6. Push using the struct coordinates
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
 }
 
-void drawBank(int x, int y, float rll) {
-  canvas.fillSprite(P51_CHARCOAL);
-  int cx = 40, cy = 40;
+
+void drawBank(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  // 1. The Background Housing (slightly aged/browned)
-  canvas.fillSmoothCircle(cx, cy, 32, 0x4228); 
+  int diameter = g.r * 2;
+  if (!canvas.createSprite(diameter, diameter)) return;
+  
+  int cx = g.r; 
+  int cy = g.r;
 
-  // 2. The "Bomb" Top Reference (Nudged 1px Left)
-  // Wider at the top, tapering down to the tube
-  canvas.fillSmoothRoundRect(cx - 3, cy - 28, 5, 12, 2, P51_DIRTY_W); // Top body
-  // 3. The Yellow "Wings" (The Static Blocks)
-  // Note: These are slightly curved in the real plane
-  canvas.fillRoundRect(cx - 28, cy + 2, 12, 10, 2, 0xCE60); 
-  canvas.fillRoundRect(cx + 16, cy + 2, 12, 10, 2, 0xCE60);
+  canvas.fillSprite(P51_CHARCOAL);
 
-  // 4. The Slip Ball
-  float ballX = cx + constrain(rll * 0.5, -15, 15);
+  // 1. The Background Housing (Slightly aged/browned)
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.8), 0x4228); 
+
+  // 2. The "Bomb" Top Reference
+  // Parametric scaling for the body
+  int bombW = 5;
+  int bombH = 12;
+  canvas.fillSmoothRoundRect(cx - 3, cy - (int)(g.r * 0.7), bombW, bombH, 2, P51_DIRTY_W);
+
+  // 3. The Yellow "Wings" (Static Blocks)
+  int wingW = 12;
+  int wingH = 10;
+  canvas.fillRoundRect(cx - (int)(g.r * 0.7), cy + 2, wingW, wingH, 2, 0xCE60); 
+  canvas.fillRoundRect(cx + (int)(g.r * 0.4), cy + 2, wingW, wingH, 2, 0xCE60);
+
+  // 4. The Slip Ball Logic
+  float rll = g.data.bank.roll;
+  float ballX = cx + constrain(rll * 0.5f, -15.0f, 15.0f);
   
   // Ball Shadow & Body
   canvas.fillCircle(ballX, cy + 7, 6, TFT_BLACK);
   canvas.fillCircle(ballX, cy + 7, 5, 0x7BEF); 
-  // Specular highlight to make it look like a steel ball in liquid
+  
+  // Specular highlight for the "Steel in Liquid" look
   canvas.fillCircle(ballX - 2, cy + 5, 2, TFT_WHITE);
 
-  canvas.pushSprite(x - 40, y - 40);
+  // 5. Push using struct coordinates (146, 170)
+  canvas.pushSprite(g.x - cx, g.y - cy);
+  canvas.deleteSprite();
 }
 
 void drawVSI(Gauge &g) {
@@ -746,38 +1004,49 @@ void drawVSI(Gauge &g) {
 
 
 
-void drawGearStatus(int screenX, int screenY) {
-  ucSprite.fillSprite(P51_CHARCOAL); // Clear background
-
-  // Local center for the 70x22 sprite
+void drawGearStatus(Gauge &g) {
+  if (g.screen != SCREEN_TFT) return;
+  TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
+  // Using your specific ucSprite name if it's a global, 
+  // or localizing it to the gauge's display pointer:
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
+  
+  // 1. SPRITE SETUP (Your 70x22 size)
+  if (!canvas.createSprite(70, 22)) return;
+  
   int localCX = 34; 
   int localCY = 11; 
   int spacing = 20; 
 
-  // Logic for the 7-second transit
+  canvas.fillSprite(P51_CHARCOAL);
+
+  // 2. TRANSIT LOGIC (Your exact 7-second sequence)
+  // Note: These need to be global variables or added to the Gauge struct
   if (gearDown != lastGearDown) {
     gearInTransit = true;
     gearTimer = millis();
     lastGearDown = gearDown;
   }
+  
   if (gearInTransit && (millis() - gearTimer > 7000)) {
     gearInTransit = false;
   }
 
-  // RED LIGHT (UNSAFE/TRANSIT)
+  // 3. RED LIGHT (UNSAFE/TRANSIT)
   if (gearInTransit) {
-    ucSprite.fillCircle(localCX + spacing, localCY, 6, TFT_RED);
-    ucSprite.drawCircle(localCX + spacing, localCY, 7, 0x8000); // Glow
+    canvas.fillCircle(localCX + spacing, localCY, 6, TFT_RED);
+    canvas.drawCircle(localCX + spacing, localCY, 7, 0x8000); // Dark Red Glow
   }
 
-  // GREEN LIGHT (LOCKED DOWN)
+  // 4. GREEN LIGHT (LOCKED DOWN)
   if (gearDown && !gearInTransit) {
-    ucSprite.fillCircle(localCX - spacing, localCY, 6, TFT_GREEN);
-    ucSprite.drawCircle(localCX - spacing, localCY, 7, 0x03E0); // Glow
+    canvas.fillCircle(localCX - spacing, localCY, 6, TFT_GREEN);
+    canvas.drawCircle(localCX - spacing, localCY, 7, 0x03E0); // Green Glow
   }
 
-  // Finally, push the small gear box to the physical screen coordinates
-  ucSprite.pushSprite(screenX, screenY);
+  // 5. PUSH (Using struct coordinates)
+  canvas.pushSprite(g.x, g.y);
+  canvas.deleteSprite();
 }
 
 // --- HELPER: PREVENT COORDINATE WRAPPING GLITCH ---
@@ -1118,6 +1387,24 @@ void updateEngineDisplay() {
   u8g2_Engine.sendBuffer();
 }
 
+
+void oled_MasterTask(void * pvParameters) {
+    for(;;) {
+        // Step 1: Update Screen 0x3C
+        updateCompassAndClockDisplay();
+        
+        // Step 2: Small breather for the I2C bus hardware (optional but safe)
+        vTaskDelay(pdMS_TO_TICKS(5));
+
+        // Step 3: Update Screen 0x3D
+        updateEngineDisplay();
+
+        // Step 4: Total loop frequency (approx 20-25Hz)
+        vTaskDelay(pdMS_TO_TICKS(40)); 
+    }
+}
+
+
 void loop() {
   static unsigned long lastFrame = 0;
   
@@ -1141,30 +1428,39 @@ void loop() {
 
   sharedHeading = heading; // Update the value for the other core to see
 
-  drawAirspeed(33, 48, airSpeed);
-  drawTurn(140, 48, (float)heading, (float)dirToHome);
-  drawHorizon(253, 54, roll, pitch);
-  drawAltimeter(33, 144, alt);
-  drawBank(146, 170, roll);
+  //drawGearStatus(140,220);
+
+
+
+  // Column 1 (Left) - Airspeed & Altimeter
+  airspeedGauge.data.airspeed.mph = airSpeed;
+  drawAirspeed(airspeedGauge);
+
+  altimeterGauge.data.altimeter.altitude = alt;
+  drawAltimeter(altimeterGauge);
+
+  // Column 2 (Center) - Turn, Bank & Gear
+  turnGauge.data.turn.heading = heading;
+  turnGauge.data.turn.homeHeading = dirToHome;
+  drawTurn(turnGauge);
+
+  bankGauge.data.bank.roll = roll;
+  drawBank(bankGauge);
+
+  // Gear status usually uses global state or a dedicated flag
+  drawGearStatus(gearGauge);
+
+  // Column 3 (Right) - Horizon & VSI
+  horizonGauge.data.horizon.roll = roll;
+  horizonGauge.data.horizon.pitch = pitch;
+  drawPoshHorizon(horizonGauge);
+
+  vsiGauge.data.vsi.verticalSpeed = vsi / 100.0f; // cm/s to m/s
   drawVSI(vsiGauge);
-  drawGearStatus(140,220);
+
+
+
+
   yield(); // Let S3 background tasks (WiFi/BT stack) breathe
+
 }
-
-void oled_MasterTask(void * pvParameters) {
-    for(;;) {
-        // Step 1: Update Screen 0x3C
-        updateCompassAndClockDisplay();
-        
-        // Step 2: Small breather for the I2C bus hardware (optional but safe)
-        vTaskDelay(pdMS_TO_TICKS(5));
-
-        // Step 3: Update Screen 0x3D
-        updateEngineDisplay();
-
-        // Step 4: Total loop frequency (approx 20-25Hz)
-        vTaskDelay(pdMS_TO_TICKS(40)); 
-    }
-}
-
-
