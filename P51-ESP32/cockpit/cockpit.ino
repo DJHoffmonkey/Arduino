@@ -236,9 +236,9 @@ Gauge vsiGauge = {
 Gauge tachoGauge = {
   .label = "Tachometer",
   .type = TYPE_TACHO,
-  .x = 32,
-  .y = 32,
-  .r = 28,
+  .x = 28,
+  .y = 28,
+  .r = 26,
   .labelScale = 1.0f,
   .data = {.tacho = {.rotationsPerMinute = 0.0f, .maxScaleRotationsPerMinute = 3000.0f}},
   .displayPtr = (void*)&u8g2_Engine,
@@ -248,33 +248,69 @@ Gauge tachoGauge = {
 Gauge fuelGauge = {
   .label = "Battery",
   .type = TYPE_FUEL,
-  .x = 96,
-  .y = 32,
-  .r = 28,
+  .x = 23,
+  .y = 98,
+  .r = 26,
   .labelScale = 1.0f,
   .data = {.fuel = {.batteryVoltage = 16.8f}},
   .displayPtr = (void*)&u8g2_Engine,
   .screen = SCREEN_OLED_B
 };
 
+// --- SINGLE SOURCE OF TRUTH ---
+struct Telemetry {
+  // Power & Engine
+  float vBat = 16.8f;
+  float fuelPercent = 100.0f;
+  float throttle = 0.0f;
+  int cellCount = 4;
 
-// --- SHARED DATA ---
-bool isBenchMode = true, gearDown = true, isArmed = false;
-float roll = 0, pitch = 0, alt = 0, airSpeed = 0, vsi = 0, heading = 0, vBat = 0, lastAltLog = -999.0, lastVBatLog = -999.0;
-unsigned long lastRequestTime = 0, lastDataTime = 0, lastLogTime = 0;
-uint8_t flapPos = 0; // 0=Clean, 1=Takeoff, 2=Landing
-uint16_t rcChannels[14]; // To safely cover your 14 channels
-uint16_t distToHome = 0;
-int16_t  dirToHome = 0; // Absolute bearing from FC to Home
-bool lastGearDown = false, gearInTransit = false;
-uint32_t gearTimer = 0;
-const uint32_t GEAR_CYCLE_TIME = 5000;
+  // Flight Data
+  float airSpeed = 0.0f;
+  float altitude = 0.0f;
+  float vsi = 0.0f;
+  float roll = 0.0f;
+  float pitch = 0.0f;
+  float heading = 0.0f;
 
-// --- GLOBAL TELEMETRY DATA ---
-volatile uint32_t missionStartTime = 0, finalFlightTime = 0;
-volatile float sharedVoltage = 16.8f; // Battery voltage from telemetry
-volatile float sharedThrottle = 0.0f; // Current throttle % (0.0 to 1.0)
-volatile float sharedBattery = 100.0f;
+  // Navigation
+  uint16_t distToHome = 0;
+  int16_t dirToHome = 0;
+
+  // Gear & Flaps logic
+  bool gearDown = true;
+  bool lastGearDown = true;
+  bool gearInTransit = false;
+  uint32_t gearTimer = 0;
+  const uint32_t GEAR_CYCLE_TIME = 5000;
+  int flapPos = 0; // 0: Up, 1: Takeoff, 2: Landing
+
+  // Timers
+  uint32_t missionStartTime = 0;
+  uint32_t finalFlightTime = 0;
+  bool isArmed = false;
+
+  bool isBenchMode = true;     
+  uint32_t lastDataTime = 0;   
+  uint32_t lastRequestTime = 0;
+  float lastAltLog = 0;        
+};
+
+// The instance marked as volatile for cross-core safety
+volatile Telemetry aircraft;
+
+// --- Helper for the Gear Logic ---
+void updateGearState(bool gearSwitchPos) {
+    if (gearSwitchPos != aircraft.lastGearDown) {
+        aircraft.gearInTransit = true;
+        aircraft.gearTimer = millis();
+        aircraft.lastGearDown = gearSwitchPos;
+    }
+    if (aircraft.gearInTransit && (millis() - aircraft.gearTimer > aircraft.GEAR_CYCLE_TIME)) {
+        aircraft.gearInTransit = false;
+        aircraft.gearDown = gearSwitchPos;
+    }
+}
 
 void setup() {
   console.begin(115200);
@@ -299,7 +335,7 @@ void setup() {
     sendMSPRequest(MSP_ATTITUDE);
     delay(100); 
     if (parseMSP()) {
-      isBenchMode = false;
+      aircraft.isBenchMode = false;
       if (isDebug) console.println("!!! FC CONNECTED !!!");
       break;
     }
@@ -360,176 +396,168 @@ bool parseMSP() {
   uint8_t size = toAndFromFC.read();
   uint8_t cmd  = toAndFromFC.read();
   
-  // CRITICAL: Buffer must be large enough for 14+ channels (28+ bytes)
   uint8_t payload[64]; 
   toAndFromFC.readBytes(payload, size);
   uint8_t crc = toAndFromFC.read(); 
 
-  lastDataTime = millis();
-  isBenchMode = false;
+  aircraft.lastDataTime = millis();
 
   // --- RC DATA (GEAR, FLAPS, ARMING) ---
-  if (cmd == MSP_RC) { // MSP_RC
+  if (cmd == MSP_RC) {
     // 1. ARMING (Channel 14)
-    int armIdx = (CH_ARM - 1) * 2; // Byte Index 26
+    int armIdx = (CH_ARM - 1) * 2;
     if (size >= (armIdx + 2)) {
       uint16_t aRaw = payload[armIdx] | (payload[armIdx + 1] << 8);
       bool newArmedState = (aRaw > 1500); 
-      
-      // Debug output only on state change
-      if (isDebug && (newArmedState != isArmed)) {
-        console.printf("DEBUG -> SYSTEM: %s (Raw PWM: %d)\n", 
-                      newArmedState ? "!!! ARMED !!!" : "DISARMED", aRaw);
+      if (isDebug && (newArmedState != aircraft.isArmed)) {
+        console.printf("DEBUG -> SYSTEM: %s (Raw PWM: %d)\n", newArmedState ? "!!! ARMED !!!" : "DISARMED", aRaw);
       }
-      isArmed = newArmedState;
+      aircraft.isArmed = newArmedState;
     }
+
     // 2. GEAR (Channel 6)
     int gearIdx = (CH_GEAR - 1) * 2;
     if (size >= (gearIdx + 2)) {
       uint16_t newGearVal = payload[gearIdx] | (payload[gearIdx + 1] << 8);
-      bool newGearDown = (newGearVal > 1500); // Usually <1500 is "Down" for gear
-      if (isDebug && (newGearDown != gearDown)) {
+      bool newGearDown = (newGearVal > 1500);
+      if (isDebug && (newGearDown != aircraft.gearDown)) {
         console.printf("DEBUG -> GEAR: %s (%d)\n", newGearDown ? "DOWN" : "UP", newGearVal);
       }
-      gearDown = newGearDown;
+      aircraft.gearDown = newGearDown;
     }
 
-    // 3. FLAPS (Channel 7 - 3 Position)
+    // 3. FLAPS (Channel 7)
     int flapIdx = (CH_FLAPS - 1) * 2;
     if (size >= (flapIdx + 2)) {
       uint16_t fRaw = payload[flapIdx] | (payload[flapIdx + 1] << 8);
       uint8_t newFlapPos;
-      
-      if (fRaw < 1300)      newFlapPos = 0; // CLEAN
-      else if (fRaw < 1700) newFlapPos = 1; // TAKEOFF
-      else                  newFlapPos = 2; // LANDING
+      if (fRaw < 1300) newFlapPos = 0; 
+      else if (fRaw < 1700) newFlapPos = 1;
+      else newFlapPos = 2;
 
-      if (isDebug && (newFlapPos != flapPos)) {
+      if (isDebug && (newFlapPos != aircraft.flapPos)) {
         const char* states[] = {"CLEAN", "TAKEOFF", "LANDING"};
         console.printf("DEBUG -> FLAPS: %s (Raw PWM: %d)\n", states[newFlapPos], fRaw);
       }
-      flapPos = newFlapPos;    
+      aircraft.flapPos = newFlapPos;    
     }
-    // --- CORRECTED THROTTLE PARSE ---
-    // Your debug showed CH4 (Index 6) is the moving throttle stick.
-    int thrIdx = 6; // Channel 4 = (4-1) * 2
+
+    // 4. THROTTLE (CH4 / Index 6)
+    int thrIdx = 6; 
     if (size >= (thrIdx + 2)) {
         uint16_t tRaw = payload[thrIdx] | (payload[thrIdx + 1] << 8);
-        
-        // Normalize 1000-2000 to 0.0-1.0
-        // We use 1000.0f to ensure float division
-        sharedThrottle = (float)(tRaw - 1000) / 1000.0f;
-        
-        // Hard constraints
-        if (sharedThrottle < 0.0f) sharedThrottle = 0.0f;
-        if (sharedThrottle > 1.0f) sharedThrottle = 1.0f;
-        
-        // Optional: add a tiny deadzone for 988-1000 jitter
-        if (tRaw < 1010) sharedThrottle = 0.0f;
+        float throttleNormalised = (float)(tRaw - 1000) / 1000.0f;
+        if (throttleNormalised < 0.0f) throttleNormalised = 0.0f;
+        if (throttleNormalised > 1.0f) throttleNormalised = 1.0f;
+        if (tRaw < 1010) throttleNormalised = 0.0f;
+        aircraft.throttle = throttleNormalised;
     }
   }
+
   // --- ATTITUDE ---
   else if (cmd == MSP_ATTITUDE && size >= 6) {
-    roll  = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
-    pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
-    heading = (int16_t)(payload[4] | (payload[5] << 8));
+    aircraft.roll = (int16_t)(payload[0] | (payload[1] << 8)) / 10.0;
+    aircraft.pitch = (int16_t)(payload[2] | (payload[3] << 8)) / 10.0;
+    aircraft.heading = (int16_t)(payload[4] | (payload[5] << 8));
   } 
 
-  // --- ALTITUDE (V2 10-BYTE) ---
+  // --- ALTITUDE ---
   else if (cmd == MSP_ALTITUDE && size >= 10) {
-    int32_t estAlt  = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-    vsi = (int16_t)(payload[4] | (payload[5] << 8));
+    int32_t estAlt = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+    aircraft.vsi = (int16_t)(payload[4] | (payload[5] << 8));
     int32_t baroAlt = (int32_t)(payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24));
-    alt = (estAlt == 0) ? (baroAlt / 30.48) : (estAlt / 30.48);
+    aircraft.altitude = (estAlt == 0) ? (baroAlt / 30.48) : (estAlt / 30.48);
 
-    if (isDebug && abs(alt - lastAltLog) > 0.1) { // 0.1ft threshold
-       console.printf("DEBUG -> ALT: %.2f ft | VSI: %d\n", alt, (int)vsi);
-       lastAltLog = alt;
+    if (isDebug && abs(aircraft.altitude - aircraft.lastAltLog) > 0.1) {
+       console.printf("DEBUG -> ALT: %.2f ft | VSI: %d\n", aircraft.altitude, (int)aircraft.vsi);
+       aircraft.lastAltLog = aircraft.altitude;
     }
   }
 
-  // --- BATTERY (MSP_ANALOG) ---
+  // --- BATTERY ---
   else if (cmd == MSP_ANALOG && size >= 1) { 
-    vBat = (payload[0] / 10.0f); // 16.4V
-    
-    // ignore payload[4] because it's returning Cell Count (3 or 4) instead of %
-    // Manually calculate 4S percentage: 14.0V to 16.8V
-    float voltPct = ((vBat - 14.0f) / 2.8f) * 100.0f;
-    sharedBattery = constrain(voltPct, 0.0f, 100.0f);
+    aircraft.vBat = (payload[0] / 10.0f);
+    // Auto-detect cells for better percentage accuracy later
+    if (aircraft.cellCount == 0 && aircraft.vBat > 1.0) {
+        aircraft.cellCount = (int)((aircraft.vBat / 4.2f) + 0.5f);
+    }
+    float voltPct = ((aircraft.vBat - (aircraft.cellCount * 3.5f)) / (aircraft.cellCount * 0.7f)) * 100.0f;
+    aircraft.fuelPercent = constrain(voltPct, 0.0f, 100.0f);
 
     if (isDebug) {
-      // This will now show ~86% instead of 3%
-      console.printf("DEBUG -> VBAT: %.2fV | FUEL: %.0f%%\n", vBat, sharedBattery);
+      console.printf("DEBUG -> VBAT: %.2fV | FUEL: %.0f%%\n", aircraft.vBat, aircraft.fuelPercent);
     }
   }
-  else if (cmd == 106) { // MSP_RAW_GPS
-    if (size >= 16) {
-        uint8_t fixType = payload[0];
-        uint8_t numSats = payload[1];
-        
-        // 3. Calculate Speed (Byte 12-13 as confirmed)
-        uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
-        airSpeed = groundSpeedCMS * 0.0223694;
-        if (airSpeed < 1.5) airSpeed = 0;
 
-    }
+  // --- GPS SPEED (RAW_GPS) ---
+  else if (cmd == 106 && size >= 16) {
+      uint16_t groundSpeedCMS = (uint16_t)(payload[12] | (payload[13] << 8));
+      aircraft.airSpeed = groundSpeedCMS * 0.0223694;
+      if (aircraft.airSpeed < 1.5) aircraft.airSpeed = 0;
   }
-  else if (cmd == MSP_NAV_STATUS) { 
-      if (size >= 6) {
-        // iNAV V2 Map: [0]GPS_mode, [1]Nav_state, [2-3]Dist, [4-5]Direction
-        // We trust the FC to handle when and where 'Home' is defined.
-        distToHome = (uint16_t)(payload[3] | (payload[4] << 8));
-        dirToHome  = (int16_t)(payload[5] | (payload[6] << 8));
 
-        if (isDebug) {
-          static uint16_t lastDebugDist = 0;
-          static int16_t  lastDebugDir  = 0;
+  // --- NAV STATUS ---
+  else if (cmd == MSP_NAV_STATUS && size >= 6) {
+      aircraft.distToHome = (uint16_t)(payload[3] | (payload[4] << 8));
+      aircraft.dirToHome = (int16_t)(payload[5] | (payload[6] << 8));
 
-          if (abs((int)distToHome - (int)lastDebugDist) > 1 || abs((int)dirToHome - (int)lastDebugDir) > 1) {
-            console.printf("DEBUG -> FC HOME: %dm | BRG: %d deg\n", distToHome, dirToHome);
-            lastDebugDist = distToHome;
-            lastDebugDir = dirToHome;
-          }
-
+      if (isDebug) {
+        static uint16_t lastDebugDistToHome = 0; 
+        static int16_t lastDebugDirectionHome = 0;
+        if (abs((int)aircraft.distToHome - (int)lastDebugDistToHome) > 1 || abs((int)aircraft.dirToHome - (int)lastDebugDirectionHome) > 1) {
+          console.printf("DEBUG -> FC HOME: %dm | BRG: %d deg\n", aircraft.distToHome, aircraft.dirToHome);
+          lastDebugDistToHome = aircraft.distToHome; lastDebugDirectionHome = aircraft.dirToHome;
         }
       }
   }
 
-  // --- AIRSPEED ---
-  // else if (cmd == MSP_AIRSPEED && size >= 2) {
-  //   float prevSpeed = airSpeed;
-  //   int16_t rawSpeed = (int16_t)(payload[0] | (payload[1] << 8)); 
-  //   airSpeed = rawSpeed * 0.02237; 
-  //   if (isDebug && abs(airSpeed - prevSpeed) > 0.5) {
-  //      console.printf("DEBUG -> AIRSPEED: %.1f MPH\n", airSpeed);
-  //   }
-  // }
-
   return true;
 }
+
 
 void updateMSP() {
   static int cycle = 0;
   
-  // 1. SEND REQUESTS (Every 40ms to keep it snappy)
-  if (millis() - lastRequestTime > 10) {
-    cycle = (cycle + 1) % 10; // Updated to 5 to cover all cases
+  // 1. SEND REQUESTS (Every 10ms to cycle through telemetry)
+  // Accessing lastRequestTime via the aircraft struct
+  if (millis() - aircraft.lastRequestTime > 10) {
+    cycle = (cycle + 1) % 10; 
     
     switch(cycle) {
-      case 0: case 2: case 4: case 6: case 8: sendMSPRequest(MSP_ATTITUDE); break;
-      case 1: sendMSPRequest(MSP_ALTITUDE); break;
-      case 3: sendMSPRequest(MSP_ANALOG); break;
-      case 5: sendMSPRequest(MSP_RC); break; 
-      case 7: sendMSPRequest(MSP_RAW_GPS); break;
-      case 9: sendMSPRequest(MSP_NAV_STATUS); break;
+      // Prioritize Attitude (Horizon) every other cycle for smoothness
+      case 0: case 2: case 4: case 6: case 8: 
+        sendMSPRequest(MSP_ATTITUDE); 
+        break;
+      case 1: 
+        sendMSPRequest(MSP_ALTITUDE); 
+        break;
+      case 3: 
+        sendMSPRequest(MSP_ANALOG); 
+        break;
+      case 5: 
+        sendMSPRequest(MSP_RC); 
+        break; 
+      case 7: 
+        sendMSPRequest(106); // MSP_RAW_GPS
+        break;
+      case 9: 
+        sendMSPRequest(MSP_NAV_STATUS); 
+        break;
     }
-    lastRequestTime = millis();
+    aircraft.lastRequestTime = millis();
   }
 
-  // 2. PROCESS INCOMING DATA (The "Missing" Engine)
-  // This loop drains the Serial buffer as long as there's a header (6 bytes min)
+  // 2. PROCESS INCOMING DATA
+  // Drains the Serial buffer as long as there's a potential MSP packet
   while (toAndFromFC.available() >= 6) {
-    parseMSP();
+    if (parseMSP()) {
+      // parseMSP now updates aircraft.lastDataTime internally
+    } else {
+      // If parseMSP fails (wrong header), we need to clear the byte to avoid a hang
+      if (toAndFromFC.available() > 0 && toAndFromFC.peek() != '$') {
+        toAndFromFC.read();
+      }
+    }
   }
 }
 
@@ -1061,47 +1089,50 @@ void drawVSI(Gauge &g) {
 void drawGearStatus(Gauge &g) {
   if (g.screen != SCREEN_TFT) return;
   TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
-  // Using your specific ucSprite name if it's a global, 
-  // or localizing it to the gauge's display pointer:
-  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  // 1. SPRITE SETUP (Your 70x22 size)
+  // 1. SPRITE SETUP
+  // We use a local sprite object for this small indicator
+  TFT_eSprite canvas = TFT_eSprite(tftPtr);
   if (!canvas.createSprite(70, 22)) return;
   
-  int localCX = 34; 
+  int localCX = 35; 
   int localCY = 11; 
   int spacing = 20; 
 
   canvas.fillSprite(P51_CHARCOAL);
 
-  // 2. TRANSIT LOGIC (Your exact 7-second sequence)
-  // Note: These need to be global variables or added to the Gauge struct
-  if (gearDown != lastGearDown) {
-    gearInTransit = true;
-    gearTimer = millis();
-    lastGearDown = gearDown;
+  // 2. TRANSIT LOGIC (Now looking inside the aircraft struct)
+  // Check if the gear state has changed since the last frame
+  if (aircraft.gearDown != aircraft.lastGearDown) {
+    aircraft.gearInTransit = true;
+    aircraft.gearTimer = millis();
+    aircraft.lastGearDown = aircraft.gearDown;
   }
   
-  if (gearInTransit && (millis() - gearTimer > 7000)) {
-    gearInTransit = false;
+  // 7-second transit timer
+  if (aircraft.gearInTransit && (millis() - aircraft.gearTimer > 7000)) {
+    aircraft.gearInTransit = false;
   }
 
-  // 3. RED LIGHT (UNSAFE/TRANSIT)
-  if (gearInTransit) {
+  // 3. RED LIGHT (UNSAFE / IN TRANSIT)
+  // Shown whenever the gear is moving
+  if (aircraft.gearInTransit) {
     canvas.fillCircle(localCX + spacing, localCY, 6, TFT_RED);
     canvas.drawCircle(localCX + spacing, localCY, 7, 0x8000); // Dark Red Glow
   }
 
-  // 4. GREEN LIGHT (LOCKED DOWN)
-  if (gearDown && !gearInTransit) {
+  // 4. GREEN LIGHT (LOCKED & DOWN)
+  // Only shown when transit is finished AND gear is down
+  if (aircraft.gearDown && !aircraft.gearInTransit) {
     canvas.fillCircle(localCX - spacing, localCY, 6, TFT_GREEN);
     canvas.drawCircle(localCX - spacing, localCY, 7, 0x03E0); // Green Glow
   }
 
-  // 5. PUSH (Using struct coordinates)
+  // 5. PUSH TO SCREEN
   canvas.pushSprite(g.x, g.y);
-  canvas.deleteSprite();
+  canvas.deleteSprite(); // Clean up memory
 }
+
 
 // --- HELPER: PREVENT COORDINATE WRAPPING GLITCH ---
 void drawSafeLine(U8G2 &canvas, float x1, float y1, float x2, float y2) {
@@ -1276,125 +1307,112 @@ void drawMissionClock(Gauge &g) {
   canvas->drawBox((int)cx - 1, (int)cy - 1, 3, 3);
 }
 
-void drawTacho(U8G2 &canvas, float centerX, float centerY, float r, float rpm, float maxRpm) {
-    canvas.setFont(u8g2_font_u8glib_4_tf); 
+void drawTacho(Gauge &g) {
+    if (g.screen != SCREEN_OLED_B) return;
+    U8G2 *canvas = (U8G2*)g.displayPtr;
 
-    // 1. DYNAMIC TICK MARKS
+    float cx = (float)g.x, cy = (float)g.y, r = (float)g.r;
+    float rpmPct = constrain(g.data.tacho.rotationsPerMinute / g.data.tacho.maxScaleRotationsPerMinute, 0.0f, 1.0f);
+
+    canvas->setFont(u8g2_font_u8glib_4_tf); 
+
+    // 1. TICKS (Start at 210° [7:00] and ADD to move Clockwise)
+    // 277.5 degree sweep takes us over the top to 5:45 (127.5° on the circle)
+    float sweep = 277.5f;
     for (int i = 0; i <= 10; i++) {
-        // 270 degree sweep (from 225 down to -45)
-        float angle = 225.0f - (i * 27.0f); 
-        float rad = (angle - 90.0f) * (M_PI / 180.0f);
-        
-        // Parametric radii
-        float rOut = r;
+        float rad = (210.0f + (i * (sweep / 10.0f)) - 90.0f) * (M_PI / 180.0f);
         float rIn = (i % 2 == 0) ? (r * 0.78f) : (r * 0.87f); 
         
-        // Ticks are static, so standard drawLine is fine here
-        canvas.drawLine((int)(centerX + rOut * cosf(rad)), (int)(centerY + rOut * sinf(rad)), 
-                        (int)(centerX + rIn * cosf(rad)), (int)(centerY + rIn * sinf(rad)));
+        canvas->drawLine(cx + r * cosf(rad), cy + r * sinf(rad), cx + rIn * cosf(rad), cy + rIn * sinf(rad));
 
-        // 2. PARAMETRIC NUMBER PLACEMENT
-        if (i % 2 != 0) { // i = 1, 3, 5, 7, 9
-            char buf[4]; 
-            // Scalable label: 10, 30, 50... or adjusted for maxRpm scale
-            sprintf(buf, "%d", (int)((maxRpm / 10.0f) * i / 100.0f)); 
-            
-            // Numbers placed at 50% of radius
+        if (i % 2 != 0) {
+            char buf[4];
+            sprintf(buf, "%d", (int)((g.data.tacho.maxScaleRotationsPerMinute / 10.0f) * i / 100.0f));
             float rText = r * 0.50f;
-            int tx = (int)(centerX + rText * cosf(rad));
-            int ty = (int)(centerY + rText * sinf(rad));
-            
-            // Center the text based on font width
-            int w = canvas.getStrWidth(buf);
-            canvas.drawStr(tx - (w / 2), ty + 2, buf);
+            canvas->drawStr((cx + rText * cosf(rad)) - (canvas->getStrWidth(buf) / 2), (cy + rText * sinf(rad)) + 2, buf);
         }
     }
 
-    // 3. PARAMETRIC TAPERED NEEDLE
-    // Calculate percentage of maxRpm (clamp to 0.0 - 1.0)
-    float rpmPct = rpm / maxRpm;
-    if (rpmPct > 1.0f) rpmPct = 1.0f;
-    if (rpmPct < 0.0f) rpmPct = 0.0f;
+    // 2. NEEDLE
+    float nRad = (210.0f + (rpmPct * sweep) - 90.0f) * (M_PI / 180.0f);
+    float tipX = cx + (r * 0.75f) * cosf(nRad), tipY = cy + (r * 0.75f) * sinf(nRad);
+    float bw = max(1.0f, r * 0.08f); 
 
-    float needleRad = (225.0f - (rpmPct * 270.0f) - 90.0f) * (M_PI / 180.0f);
-    
-    // Needle tip at 75% of radius
-    float tipR = r * 0.75f;
-    float tipX = centerX + tipR * cosf(needleRad);
-    float tipY = centerY + tipR * sinf(needleRad);
-    
-    // Width of needle base scales with r
-    float baseWidth = max(1.0f, r * 0.08f);
-    float side1X = centerX + baseWidth * cosf(needleRad + 1.57f);
-    float side1Y = centerY + baseWidth * sinf(needleRad + 1.57f);
-    float side2X = centerX + baseWidth * cosf(needleRad - 1.57f);
-    float side2Y = centerY + baseWidth * sinf(needleRad - 1.57f);
+    drawSafeLine(*canvas, cx, cy, tipX, tipY); 
+    drawSafeLine(*canvas, cx + bw * cosf(nRad + 1.57f), cy + bw * sinf(nRad + 1.57f), tipX, tipY);
+    drawSafeLine(*canvas, cx + bw * cosf(nRad - 1.57f), cy + bw * sinf(nRad - 1.57f), tipX, tipY);
 
-    // Use SafeLines for moving parts
-    drawSafeLine(canvas, centerX, centerY, tipX, tipY); 
-    drawSafeLine(canvas, side1X, side1Y, tipX, tipY);
-    drawSafeLine(canvas, side2X, side2Y, tipX, tipY);
-
-    // 4. CENTER DISC (Scales with radius)
-    canvas.drawDisc((int)centerX, (int)centerY, (int)(r * 0.12f));
+    canvas->drawDisc(cx, cy, r * 0.12f);
 }
 
-void drawFuelGauge(U8G2 &canvas, float centerX, float centerY, float r, float percent) {
-    // 1. Ticks (Using your 23/19 ratio)
-    for (int i = 0; i <= 4; i++) {
-        float angle = 210.0f - (i * 60.0f); 
-        float rad = (angle - 90.0f) * (M_PI / 180.0f);
-        
-        float rOut = r;          // Was 23
-        float rIn = r * 0.826f;  // Was 19 (19/23 = 0.826)
-        
-        canvas.drawLine((int)(centerX + rOut * cosf(rad)), (int)(centerY + rOut * sinf(rad)), 
-                        (int)(centerX + rIn * cosf(rad)), (int)(centerY + rIn * sinf(rad)));
-    }
+void drawFuel(Gauge &g) {
+    if (g.screen != SCREEN_OLED_B) return;
+    U8G2 *canvas = (U8G2*)g.displayPtr;
 
-    // 2. BIG RADIAL LABELS (E, 1/2, F)
-    canvas.setFont(u8g2_font_5x7_tr); 
+    float cx = (float)g.x, cy = (float)g.y, r = (float)g.r;
+    float totalVolts = g.data.fuel.batteryVoltage;
+
+    // 1. CELL DETECTION LOGIC
+    // Detects 3S, 4S, 6S etc. (4.2V is max per cell)
+    int cells = (int)((totalVolts / 4.2f) + 0.5f); 
+    if (cells < 1) cells = 1; // Safety fallback
+
+    float voltsPerCell = totalVolts / (float)cells;
+    
+    // Standard LiPo range: 3.5V (Empty) to 4.2V (Full)
+    float pct = (voltsPerCell - 3.5f) / (4.2f - 3.5f) * 100.0f;
+    pct = constrain(pct, 0.0f, 100.0f);
+
+    // 2. TICKS & LABELS (Proven 210 -> -30 sweep)
+    canvas->setFont(u8g2_font_5x7_tr);
     const char* labels[] = {"E", "", "1/2", "", "F"};
-    float rText = r * 0.435f; // Was 10 (10/23 = 0.435)
-
     for (int i = 0; i <= 4; i++) {
-        if (strlen(labels[i]) > 0) {
-            float angle = 210.0f - (i * 60.0f);
-            float rad = (angle - 90.0f) * (M_PI / 180.0f);
-            int tx = (int)(centerX + rText * cosf(rad));
-            int ty = (int)(centerY + rText * sinf(rad));
-            int xOff = (i == 2) ? 7 : 3; 
-            canvas.drawStr(tx - xOff, ty + 3, labels[i]);
+        float rad = (210.0f - (i * 60.0f) - 90.0f) * (M_PI / 180.0f);
+        canvas->drawLine(cx + r * cosf(rad), cy + r * sinf(rad), 
+                         cx + (r * 0.826f) * cosf(rad), cy + (r * 0.826f) * sinf(rad));
+        if (labels[i][0] != '\0') {
+            float rText = r * 0.435f;
+            canvas->drawStr((int)(cx + rText * cosf(rad)) - ((i==2)?7:3), (int)(cy + rText * sinf(rad)) + 3, labels[i]);
         }
     }
 
-    // 3. TAPERED NEEDLE (Matching your WORKING logic exactly)
-    float fuelRad = (210.0f - ((percent / 100.0f) * 240.0f) - 90.0f) * (M_PI / 180.0f);
-    float tipR = r * 0.739f; // Was 17 (17/23 = 0.739)
-    int fTipX = (int)(centerX + tipR * cosf(fuelRad));
-    int fTipY = (int)(centerY + tipR * sinf(fuelRad));
+    // 3. THE NEEDLE
+    float fuelRad = (210.0f - ((pct / 100.0f) * 240.0f) - 90.0f) * (M_PI / 180.0f);
+    float tipX = cx + (r * 0.739f) * cosf(fuelRad), tipY = cy + (r * 0.739f) * sinf(fuelRad);
     
-    // Using your exact 3-line structure
-    canvas.drawLine((int)centerX, (int)centerY, fTipX, fTipY); 
-    canvas.drawLine((int)(centerX + 1 * cosf(fuelRad + 1.57f)), (int)(centerY + 1 * sinf(fuelRad + 1.57f)), fTipX, fTipY);
-    canvas.drawLine((int)(centerX + 1 * cosf(fuelRad - 1.57f)), (int)(centerY + 1 * sinf(fuelRad - 1.57f)), fTipX, fTipY);
-    
-    // Center Disc (Was 2)
-    canvas.drawDisc((int)centerX, (int)centerY, (int)max(2.0f, r * 0.087f));
+    canvas->drawLine((int)cx, (int)cy, (int)tipX, (int)tipY);
+    canvas->drawLine((int)(cx + cosf(fuelRad + 1.57f)), (int)(cy + sinf(fuelRad + 1.57f)), (int)tipX, (int)tipY);
+    canvas->drawLine((int)(cx + cosf(fuelRad - 1.57f)), (int)(cy + sinf(fuelRad - 1.57f)), (int)tipX, (int)tipY);
+    canvas->drawDisc((int)cx, (int)cy, (int)max(2.0f, r * 0.12f));
 }
 
 
 void updateCompassAndClockDisplay() {
-  // 1. Update the data members from your global telemetry
-  compassGauge.data.compass.heading = (int)heading;
-  compassGauge.data.compass.homeHeading = (int)dirToHome;
-  clockGauge.data.clock.flightTime = finalFlightTime;
+  static float visualHeading = 0.0f;
+  static float visualHome = 0.0f;
+  const float alpha = 0.15f; // Smoothing factor
 
-  // 2. Render sequence
+  // 1. Smooth the Heading
+  float deltaH = (float)compassGauge.data.compass.heading - visualHeading;
+  if (deltaH > 180.0f)  deltaH -= 360.0f;
+  if (deltaH < -180.0f) deltaH += 360.0f;
+  visualHeading += deltaH * alpha;
+
+  // 2. Smooth the Home Bearing
+  float deltaHome = (float)compassGauge.data.compass.homeHeading - visualHome;
+  if (deltaHome > 180.0f)  deltaHome -= 360.0f;
+  if (deltaHome < -180.0f) deltaHome += 360.0f;
+  visualHome += deltaHome * alpha;
+
+  // 3. Update the struct with "Visual" (Smoothed) values for the drawing function
+  compassGauge.data.compass.heading = (int)visualHeading;
+  compassGauge.data.compass.homeHeading = (int)visualHome;
+
+  // 4. Render to OLED A (0x3C)
   u8g2_CompassAndClock.clearBuffer();
   
-  drawCompass(compassGauge);
-  drawMissionClock(clockGauge);
+  drawCompass(compassGauge);      // The parametric function we wrote
+  drawMissionClock(clockGauge);   // The analog 10-min lap clock
   
   u8g2_CompassAndClock.sendBuffer(); 
 }
@@ -1405,25 +1423,31 @@ void updateEngineDisplay() {
   const float motorKv = 580.0f; 
   const float alpha = 0.12f;
 
-  // 1. Data Processing
-  float targetRpm = motorKv * vBat * sharedThrottle; 
-  float maxScaleRpm = (vBat > 18.0f) ? 16000.0f : 10000.0f;
+  // 1. Snapshot and Math (Processing Truth to Visual)
+  // Now pulling from the Single Source of Truth: aircraft
+  float targetRpm = motorKv * aircraft.vBat * aircraft.throttle; 
+  
+  // Smoothing for the needles
   visualRpm += (targetRpm - visualRpm) * alpha;
-  visualFuel += (sharedBattery - visualFuel) * alpha;
+  visualFuel += (aircraft.fuelPercent - visualFuel) * alpha;
 
-  // 2. Render
+  // 2. Feed the smoothed data into the Gauge Structs
+  tachoGauge.data.tacho.rotationsPerMinute = visualRpm;
+  
+  // Dynamic scale: If voltage > 18V (6S/High 4S), use 16k scale, otherwise 10k
+  tachoGauge.data.tacho.maxScaleRotationsPerMinute = (aircraft.vBat > 18.0f) ? 16000.0f : 10000.0f;
+  
+  // Note: We pass the smoothed percentage into the fuel gauge
+  fuelGauge.data.fuel.batteryVoltage = visualFuel; 
+
+  // 3. Render to the OLED
   u8g2_Engine.clearBuffer();
-
-  const float farLeftX = 24.0f; // Minimal clearance for 23r dial
-  const float topY = 24.0f;
-  const float bottomY = 101.0f;
-  const float gaugeRadius = 23.0f; // Parametric master size for this screen
-
-  drawTacho(u8g2_Engine, farLeftX, topY, gaugeRadius, visualRpm, maxScaleRpm);
-  drawFuelGauge(u8g2_Engine, 20.0f, bottomY, gaugeRadius, visualFuel);
-
+  drawTacho(tachoGauge);
+  drawFuel(fuelGauge);
   u8g2_Engine.sendBuffer();
 }
+
+
 
 
 void oled_MasterTask(void * pvParameters) {
@@ -1448,61 +1472,73 @@ void oled_MasterTask(void * pvParameters) {
 }
 
 void loop() {
-  static unsigned long lastFrame = 0;
-  
-  if (isBenchMode) {
+  // --- DATA ACQUISITION ---
+  if (aircraft.isBenchMode) {
+    // Simulation mode using the Source of Truth
     float t = millis() / 1000.0;
-    airSpeed = 45 + sin(t * 0.5) * 35;
-    alt = 225.0 + (sin(t * 0.2) * 225.0);
-    roll = sin(t) * 35;
-    pitch = cos(t * 0.7) * 10;
-    vsi = cos(t * 0.2) * 400.0; // Match cm/s scale
-    heading += 0.2;
-    if (heading >= 360) heading = 0;
-    vBat = 16.8; // Simulating a 4S pack for the Tacho math
-    // Simulating throttle cycling from 0 to 100% every 12 seconds
-    sharedThrottle = (sin(t * 0.5) * 0.5) + 0.5; 
-    // Simulating fuel draining slowly over time, then resetting
-    sharedBattery = 100.0 - (fmod(t, 60.0) * 1.66);
+    
+    aircraft.airSpeed = 45.0 + sin(t * 0.5) * 35.0;
+    aircraft.altitude = 225.0 + (sin(t * 0.2) * 225.0);
+    aircraft.roll     = sin(t) * 35.0;
+    aircraft.pitch    = cos(t * 0.7) * 10.0;
+    aircraft.vsi      = cos(t * 0.2) * 400.0; // Simulated cm/s
+    
+    aircraft.heading += 0.2;
+    if (aircraft.heading >= 360.0) aircraft.heading = 0;
+    // Simulate the plane flying in a circle around 'Home'
+    aircraft.distToHome = 150 + (sin(t * 0.1) * 50); // Pulse distance between 100m and 200m
+    aircraft.dirToHome = (int)(t * 10) % 360;       // Rotate the home bearing 10 degrees per second  
+    aircraft.vBat = 16.8; // Constant 4S voltage for bench testing
+    
+    // Throttle cycling 0-100%
+    aircraft.throttle = (sin(t * 0.5) * 0.5) + 0.5; 
+    
+    // Fuel draining 100->0 over 60 seconds
+    aircraft.fuelPercent = 100.0 - (fmod(t, 60.0) * 1.66);
+    
   } else {
-    updateMSP();
+    // Live mode: updateMSP calls parseMSP which now writes to 'aircraft'
+    updateMSP(); 
   }
 
-  compassGauge.data.compass.heading = (int)heading;
-  compassGauge.data.compass.homeHeading = (int)dirToHome;
-    
-  // Sync the Clock Gauge Data
-  clockGauge.data.clock.flightTime = finalFlightTime;
+  // --- SYNC GAUGE DATA FROM SOURCE OF TRUTH ---
+  
+  // Navigation & System
+  compassGauge.data.compass.heading     = (int)aircraft.heading;
+  compassGauge.data.compass.homeHeading = (int)aircraft.dirToHome;
+  clockGauge.data.clock.flightTime      = aircraft.finalFlightTime;
 
   // Column 1 (Left) - Airspeed & Altimeter
-  airspeedGauge.data.airspeed.mph = airSpeed;
-  drawAirspeed(airspeedGauge);
-
-  altimeterGauge.data.altimeter.altitude = alt;
-  drawAltimeter(altimeterGauge);
+  airspeedGauge.data.airspeed.mph        = aircraft.airSpeed;
+  altimeterGauge.data.altimeter.altitude = aircraft.altitude;
 
   // Column 2 (Center) - Turn, Bank & Gear
-  turnGauge.data.turn.heading = (int)heading;
-  turnGauge.data.turn.homeHeading = (int)dirToHome;
-  drawTurn(turnGauge);
-
-  bankGauge.data.bank.roll = roll;
-  drawBank(bankGauge);
-
-  // Gear status usually uses global state or a dedicated flag
-  drawGearStatus(gearGauge);
+  turnGauge.data.turn.heading           = (int)aircraft.heading;
+  turnGauge.data.turn.homeHeading       = (int)aircraft.dirToHome;
+  bankGauge.data.bank.roll              = aircraft.roll;
 
   // Column 3 (Right) - Horizon & VSI
-  horizonGauge.data.horizon.roll = roll;
-  horizonGauge.data.horizon.pitch = pitch;
-  drawPoshHorizon(horizonGauge);
+  horizonGauge.data.horizon.roll        = aircraft.roll;
+  horizonGauge.data.horizon.pitch       = aircraft.pitch;
+  
+  // VSI: MSP gives cm/s. We divide by 100 to get m/s for the needle logic
+  vsiGauge.data.vsi.verticalSpeed       = aircraft.vsi / 100.0f; 
 
-  vsiGauge.data.vsi.verticalSpeed = vsi / 100.0f; // cm/s to m/s
+  // Engine Display (OLED)
+  // Logic: motorKv * current battery voltage * throttle percentage
+  tachoGauge.data.tacho.rotationsPerMinute = (580.0f * aircraft.vBat * aircraft.throttle);
+  fuelGauge.data.fuel.batteryVoltage       = aircraft.fuelPercent;
+
+  // --- RENDER CALLS ---
+  // Note: These draw functions now look at the updated .data members
+  drawAirspeed(airspeedGauge);
+  drawAltimeter(altimeterGauge);
+  drawTurn(turnGauge);
+  drawBank(bankGauge);
+  drawGearStatus(gearGauge);
+  drawPoshHorizon(horizonGauge);
   drawVSI(vsiGauge);
 
-
-
-
-  yield(); // Let S3 background tasks (WiFi/BT stack) breathe
-
+  // Background house-keeping
+  yield(); 
 }
