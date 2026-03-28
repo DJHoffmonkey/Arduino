@@ -39,7 +39,6 @@ enum GaugeType {
   TYPE_FUEL
 };
 
-enum GaugeType { TYPE_VSI, TYPE_TACHO, TYPE_ALTIMETER, TYPE_FUEL };
 enum DisplayType { SCREEN_TFT, SCREEN_U8G2 };
 
 struct GaugeData {
@@ -52,11 +51,10 @@ struct GaugeData {
       float maxScaleRotationsPerMinute; 
     } tacho;
     struct { 
-      float altitudeFeet; 
-      float barometricPressure; 
+      float altitude; 
+      float pressure; 
     } altimeter;
     struct { 
-      float fuelPercentage; 
       float batteryVoltage; 
     } fuel;
   };
@@ -72,23 +70,6 @@ struct Gauge {
   DisplayType screen;
 };
 
-// INITIALIZATION
-// VSI is sparse, so we can go big on the labels
-
-// Top of cockpit.ino
-Gauge vsiGauge = {
-  .label = "Vertical Speed Indicator",
-  .type = TYPE_VSI,
-  .x = 64, 
-  .y = 64,
-  .r = 40,
-  .labelScale = 1.2f,
-  .data = {.vsi = {.verticalSpeed = 0.0f}},
-  .displayPtr = (void*)&tft,
-  .screen = SCREEN_TFT
-};
-
-
 SemaphoreHandle_t i2cMutex;
 TaskHandle_t OLED_CompassAndClockTask;
 float sharedHeading = 0; // We use this to pass data between cores
@@ -101,6 +82,37 @@ TFT_eSprite ucSprite = TFT_eSprite(&tft);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_CompassAndClock(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 // Engine display is tall (64x128)
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+
+
+// VSI INITIALISATION. VSI is sparse, so we can go big on the labels
+Gauge vsiGauge = {
+  .label = "Vertical Speed Indicator",
+  .type = TYPE_VSI,
+  .x = 250, 
+  .y = 160,
+  .r = 40,
+  .labelScale = 1.2f,
+  .data = {.vsi = {.verticalSpeed = 0.0f}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
+
+Gauge altimeterGauge = {
+  .label = "Altimeter",
+  .type = TYPE_ALTIMETER,
+  .x = 240,
+  .y = 60, 
+  .r = 40, 
+  .labelScale = 1.2f,
+  .data = {.altimeter = {.altitude = 0.0f, .pressure = 1013.25f}},
+  .displayPtr = (void*)&tft,
+  .screen = SCREEN_TFT
+};
+
+
+
+
+
 
 // --- SHARED DATA ---
 bool isBenchMode = true, gearDown = true, isArmed = false;
@@ -655,79 +667,83 @@ void drawVSI(Gauge &g) {
   TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
   TFT_eSprite canvas = TFT_eSprite(tftPtr);
   
-  int diameter = g.r * 2;
-  canvas.createSprite(diameter, diameter);
+  // 1. SPRITE SETUP
+  // Add 4px padding to prevent edge artifacts
+  int spriteSize = (g.r * 2) + 4;
+  canvas.createSprite(spriteSize, spriteSize);
   
-  int cx = g.r; 
-  int cy = g.r;
-  canvas.fillSprite(P51_CHARCOAL);
-  canvas.fillRect(0, 0, diameter, diameter, 0x2104); 
-  canvas.fillSmoothCircle(cx, cy, g.r * 0.35, 0x0841); 
+  // Local centers (Integers only!)
+  int cx = spriteSize / 2; 
+  int cy = spriteSize / 2;
 
-  // --- DYNAMIC FONT SCALING ---
-  // We use your g.labelScale to decide which hardware font to pick
+  // CRITICAL: Wipe the sprite memory completely
+  canvas.fillSprite(TFT_BLACK); 
+  
+  // 2. BACKGROUNDS
+  canvas.fillSmoothCircle(cx, cy, g.r, P51_CHARCOAL);
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.95), 0x2104); 
+  canvas.fillSmoothCircle(cx, cy, (int)(g.r * 0.35), 0x0841); 
+
+  // 3. FONT SCALING
   int fontSelection = 2;
-  if (g.r * g.labelScale > 50) fontSelection = 4; // Switch to bigger font if there's room
-  else if (g.r * g.labelScale < 25) fontSelection = 1; // Drop to tiny font for small/busy dials
-
+  if (g.r * g.labelScale > 50) fontSelection = 4;
+  else if (g.r * g.labelScale < 25) fontSelection = 1;
   canvas.setTextColor(P51_RADIUM);
   
-  // 2. Expanded Scale Mapping
-  float scale[] = {1.0, 2.0, 4.0};
-  float offsets[] = {35, 70, 140}; 
+  // 4. SCALE MARKS (1, 2, 4)
+  float scaleValues[] = {1.0, 2.0, 4.0};
+  float degreeOffsets[] = {35, 70, 140}; 
   
-  // Parametric Radii
-  float labelRadius = g.r * 0.55;  // Pushed slightly out to make room for larger fonts
-  float tickInner   = g.r * 0.75;
-  float tickOuter   = g.r;
-  
-  // verticalPadding moves the text up or down to keep it centered on its coordinate
-  // Based on the selected font's approximate height
-  float verticalPadding = (fontSelection == 4) ? 8 : 4;
+  int labelR = (int)(g.r * 0.55);  
+  int tickIn  = (int)(g.r * 0.75);
+  int tickOut = (int)(g.r * 0.95);
+  int vPad = (fontSelection == 4) ? 8 : 4;
 
   for (int i = 0; i < 3; i++) {
-    float rUp = (180 - offsets[i]) * (PI / 180.0);
-    float rDn = (180 + offsets[i]) * (PI / 180.0);
+    float radUp = (180 - degreeOffsets[i]) * (PI / 180.0);
+    float radDn = (180 + degreeOffsets[i]) * (PI / 180.0);
     
-    // Numbers: Using the dynamic fontSelection and verticalPadding
-    canvas.drawCentreString(String((int)scale[i]), cx + labelRadius * cos(rUp), cy + labelRadius * sin(rUp) - verticalPadding, fontSelection);
-    canvas.drawCentreString(String((int)scale[i]), cx + labelRadius * cos(rDn), cy + labelRadius * sin(rDn) - verticalPadding, fontSelection);
+    // Draw Numbers (Casted to Int)
+    canvas.drawCentreString(String((int)scaleValues[i]), cx + (int)(labelR * cos(radUp)), cy + (int)(labelR * sin(radUp)) - vPad, fontSelection);
+    canvas.drawCentreString(String((int)scaleValues[i]), cx + (int)(labelR * cos(radDn)), cy + (int)(labelR * sin(radDn)) - vPad, fontSelection);
     
-    // Ticks
-    canvas.drawLine(cx + tickInner * cos(rUp), cy + tickInner * sin(rUp), cx + tickOuter * cos(rUp), cy + tickOuter * sin(rUp), P51_RADIUM);
-    canvas.drawLine(cx + tickInner * cos(rDn), cy + tickInner * sin(rDn), cx + tickOuter * cos(rDn), cy + tickOuter * sin(rDn), P51_RADIUM);
+    // Draw Ticks (Casted to Int)
+    canvas.drawLine(cx + (int)(tickIn * cos(radUp)), cy + (int)(tickIn * sin(radUp)), cx + (int)(tickOut * cos(radUp)), cy + (int)(tickOut * sin(radUp)), P51_RADIUM);
+    canvas.drawLine(cx + (int)(tickIn * cos(radDn)), cy + (int)(tickIn * sin(radDn)), cx + (int)(tickOut * cos(radDn)), cy + (int)(tickOut * sin(radDn)), P51_RADIUM);
   }
 
-  // 3. Niche Details (Using parametric diameter)
-  canvas.drawCentreString(".5", diameter * 0.15, cy - labelRadius, 1);
-  canvas.drawCentreString(".5", diameter * 0.15, cy + (labelRadius * 0.5), 1);
+  // 5. NICHE DETAILS (The .5s and Brackets)
+  canvas.drawCentreString(".5", cx - (int)(g.r * 0.7), cy - (int)(g.r * 0.5), 1);
+  canvas.drawCentreString(".5", cx - (int)(g.r * 0.7), cy + (int)(g.r * 0.3), 1);
   
-  // Brackets and Zero markers stay hardcoded for detail or can be r-based
-  canvas.drawLine(0, cy, g.r * 0.2, cy, P51_RADIUM);
+  // Zero and 6 markers
+  canvas.drawLine(cx - g.r, cy, cx - (int)(g.r * 0.75), cy, P51_RADIUM);
+  canvas.drawCentreString("6", cx + (int)(g.r * 0.65), cy - vPad, fontSelection);
+  canvas.drawLine(cx + (int)(g.r * 0.85), cy, cx + (int)(g.r * 0.95), cy, P51_RADIUM);
 
-  // 4. The "Single 6" at 3 o'clock
-  canvas.drawCentreString("6", cx + (g.r * 0.65), cy - verticalPadding, fontSelection);
-  canvas.drawLine(cx + (g.r * 0.85), cy, cx + g.r, cy, P51_RADIUM);
+  // 6. NEEDLE LOGIC
+  float absV = abs(g.data.vsi.verticalSpeed);
+  float move = 0;
+  if (absV <= 1.0) move = absV * 35.0;
+  else if (absV <= 2.0) move = 35.0 + (absV - 1.0) * 35.0;
+  else if (absV <= 4.0) move = 70.0 + (absV - 2.0) * 35.0; 
+  else move = 140.0 + (constrain(absV, 4, 6) - 4.0) * 20.0; 
 
-  // 5. Calibrated Needle Logic (Full Descriptive Names)
-  float absoluteVerticalSpeed = abs(g.data.vsi.verticalSpeed);
-  float needleMovementDegrees = 0;
+  float finalDeg = (g.data.vsi.verticalSpeed >= 0) ? (180.0 - move) : (180.0 + move);
+  float nRad = finalDeg * (PI / 180.0);
+  int nLen = (int)(g.r * 0.85); 
   
-  if (absoluteVerticalSpeed <= 1.0)      needleMovementDegrees = absoluteVerticalSpeed * 35.0;
-  else if (absoluteVerticalSpeed <= 2.0) needleMovementDegrees = 35.0 + (absoluteVerticalSpeed - 1.0) * 35.0;
-  else if (absoluteVerticalSpeed <= 4.0) needleMovementDegrees = 70.0 + (absoluteVerticalSpeed - 2.0) * 35.0; 
-  else                                   needleMovementDegrees = 140.0 + (constrain(absoluteVerticalSpeed, 4, 6) - 4.0) * 20.0; 
-
-  float finalNeedleDegrees = (g.data.vsi.verticalSpeed >= 0) ? (180.0 - needleMovementDegrees) : (180.0 + needleMovementDegrees);
-  float needleRadians = finalNeedleDegrees * (PI / 180.0);
-  float needleLength = g.r * 0.9; 
-  
-  canvas.drawWideLine(cx, cy, cx + needleLength * cos(needleRadians), cy + needleLength * sin(needleRadians), 2, TFT_WHITE, 0x0841);
+  // Shadow + Main Needle (Casted to Int)
+  canvas.drawLine(cx + 1, cy + 1, cx + 1 + (int)(nLen * cos(nRad)), cy + 1 + (int)(nLen * sin(nRad)), 0x0841);
+  canvas.drawWideLine(cx, cy, cx + (int)(nLen * cos(nRad)), cy + (int)(nLen * sin(nRad)), 2, TFT_WHITE, 0x0841);
   canvas.fillCircle(cx, cy, 3, TFT_BLACK);
   
-  canvas.pushSprite(g.x - cx, g.y - cy);
+  // 7. FINAL PUSH
+  // We use (int) to ensure the sprite lands exactly on a physical screen pixel
+  canvas.pushSprite((int)(g.x - cx), (int)(g.y - cy));
   canvas.deleteSprite();
 }
+
 
 
 void drawGearStatus(int screenX, int screenY) {
@@ -762,39 +778,6 @@ void drawGearStatus(int screenX, int screenY) {
 
   // Finally, push the small gear box to the physical screen coordinates
   ucSprite.pushSprite(screenX, screenY);
-}
-
-void loop() {
-  static unsigned long lastFrame = 0;
-  
-  if (isBenchMode) {
-    float t = millis() / 1000.0;
-    airSpeed = 45 + sin(t * 0.5) * 35;
-    alt = 225.0 + (sin(t * 0.2) * 225.0);
-    roll = sin(t) * 35;
-    pitch = cos(t * 0.7) * 10;
-    vsi = cos(t * 0.2) * 400.0; // Match cm/s scale
-    heading += 0.2;
-    if (heading >= 360) heading = 0;
-    vBat = 16.8; // Simulating a 4S pack for the Tacho math
-    // Simulating throttle cycling from 0 to 100% every 12 seconds
-    sharedThrottle = (sin(t * 0.5) * 0.5) + 0.5; 
-    // Simulating fuel draining slowly over time, then resetting
-    sharedBattery = 100.0 - (fmod(t, 60.0) * 1.66);
-  } else {
-    updateMSP();
-  }
-
-  sharedHeading = heading; // Update the value for the other core to see
-
-  drawAirspeed(33, 48, airSpeed);
-  drawTurn(140, 48, (float)heading, (float)dirToHome);
-  drawHorizon(253, 54, roll, pitch);
-  drawAltimeter(33, 144, alt);
-  drawBank(146, 170, roll);
-  drawVSI(vsiGuage);
-  drawGearStatus(140,220);
-  yield(); // Let S3 background tasks (WiFi/BT stack) breathe
 }
 
 // --- HELPER: PREVENT COORDINATE WRAPPING GLITCH ---
@@ -1135,6 +1118,38 @@ void updateEngineDisplay() {
   u8g2_Engine.sendBuffer();
 }
 
+void loop() {
+  static unsigned long lastFrame = 0;
+  
+  if (isBenchMode) {
+    float t = millis() / 1000.0;
+    airSpeed = 45 + sin(t * 0.5) * 35;
+    alt = 225.0 + (sin(t * 0.2) * 225.0);
+    roll = sin(t) * 35;
+    pitch = cos(t * 0.7) * 10;
+    vsi = cos(t * 0.2) * 400.0; // Match cm/s scale
+    heading += 0.2;
+    if (heading >= 360) heading = 0;
+    vBat = 16.8; // Simulating a 4S pack for the Tacho math
+    // Simulating throttle cycling from 0 to 100% every 12 seconds
+    sharedThrottle = (sin(t * 0.5) * 0.5) + 0.5; 
+    // Simulating fuel draining slowly over time, then resetting
+    sharedBattery = 100.0 - (fmod(t, 60.0) * 1.66);
+  } else {
+    updateMSP();
+  }
+
+  sharedHeading = heading; // Update the value for the other core to see
+
+  drawAirspeed(33, 48, airSpeed);
+  drawTurn(140, 48, (float)heading, (float)dirToHome);
+  drawHorizon(253, 54, roll, pitch);
+  drawAltimeter(33, 144, alt);
+  drawBank(146, 170, roll);
+  drawVSI(vsiGauge);
+  drawGearStatus(140,220);
+  yield(); // Let S3 background tasks (WiFi/BT stack) breathe
+}
 
 void oled_MasterTask(void * pvParameters) {
     for(;;) {
@@ -1151,3 +1166,5 @@ void oled_MasterTask(void * pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(40)); 
     }
 }
+
+
