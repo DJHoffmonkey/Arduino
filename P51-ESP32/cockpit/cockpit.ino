@@ -282,10 +282,12 @@ struct Telemetry {
   const uint32_t GEAR_CYCLE_TIME = 5000;
   int flapPos = 0; // 0: Up, 1: Takeoff, 2: Landing
 
-  // Timers
-  uint32_t missionStartTime = 0;
-  uint32_t finalFlightTime = 0;
+  bool lastArmState = false;
   bool isArmed = false;
+  
+  uint32_t armStartTime = 0;    // Snapshot of millis() when armed
+  uint32_t msElapsed = 0;       // Total milliseconds since arming
+  uint32_t finalMsElapsed = 0;  // Stored time after disarm
 
   bool isBenchMode = true;     
   uint32_t lastDataTime = 0;   
@@ -361,19 +363,6 @@ void setup() {
   xTaskCreatePinnedToCore(oled_MasterTask, "DualOLED", 8192, NULL, 1, NULL, 0);
 
 }
-
-void renderGauge(Gauge &g) {
-  switch (g.type) {
-    case TYPE_VSI:
-      drawVSI(g); // Inside drawVSI, you use g.data.vsi.verticalSpeed
-      break;
-    case TYPE_HORIZON:
-      // drawHorizon(g); // Inside here, you use g.data.horizon.pitch/roll
-      break;
-    // ... etc
-  }
-}
-
 
 void setupOLED_CompassAndClock() {
   u8g2_CompassAndClock.setI2CAddress(0x3C * 2);
@@ -1464,7 +1453,28 @@ void updateEngineDisplay() {
 }
 
 
+void updateClock() {
+  // --- MISSION CLOCK LOGIC ---
+  if (aircraft.isArmed) {
+    if (!aircraft.lastArmState) {
+      // START THE CLOCK
+      aircraft.armStartTime = millis();
+      aircraft.lastArmState = true;
+    }
+    // Calculate raw milliseconds elapsed
+    aircraft.msElapsed = millis() - aircraft.armStartTime;
+  } else {
+    if (aircraft.lastArmState) {
+      // STOP THE CLOCK
+      aircraft.finalMsElapsed = aircraft.msElapsed;
+      aircraft.lastArmState = false;
+    }
+  }
+  // --- SYNC GAUGE DATA ---
+  // We feed the gauge raw Milliseconds now
+  clockGauge.data.clock.flightTime = (aircraft.isArmed) ? aircraft.msElapsed : aircraft.finalMsElapsed;
 
+}
 
 void oled_MasterTask(void * pvParameters) {
   for(;;) {
@@ -1522,7 +1532,6 @@ void loop() {
   // Navigation & System
   compassGauge.data.compass.heading     = (int)aircraft.heading;
   compassGauge.data.compass.homeHeading = (int)aircraft.dirToHome;
-  clockGauge.data.clock.flightTime      = aircraft.finalFlightTime;
 
   // Column 1 (Left) - Airspeed & Altimeter
   airspeedGauge.data.airspeed.mph        = aircraft.airSpeed;
@@ -1546,6 +1555,7 @@ void loop() {
   fuelGauge.data.fuel.batteryVoltage       = aircraft.fuelPercent;
 
   updateGearPhysics();
+  updateClock();
 
   // --- RENDER CALLS ---
   // Note: These draw functions now look at the updated .data members
