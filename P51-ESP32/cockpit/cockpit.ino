@@ -88,10 +88,10 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2_Engine(U8G2_R3, /* reset=*/ U8X8_PIN_NO
 Gauge vsiGauge = {
   .label = "Vertical Speed Indicator",
   .type = TYPE_VSI,
-  .x = 250, 
-  .y = 160,
-  .r = 40,
-  .labelScale = 1.2f,
+  .x = 254, 
+  .y = 157,
+  .r = 39,
+  .labelScale = 1.0f,
   .data = {.vsi = {.verticalSpeed = 0.0f}},
   .displayPtr = (void*)&tft,
   .screen = SCREEN_TFT
