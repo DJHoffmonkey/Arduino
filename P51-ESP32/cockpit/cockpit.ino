@@ -1239,19 +1239,30 @@ void drawCompass(Gauge &g) {
     // Stem
     drawSafeLine(*canvas, cx, cy, hTipX, hTipY);
 
-    // 3. DRAW HEADING NEEDLE (The Parallel Rails)
+    // 3. DRAW HEADING NEEDLE (The Parallel Rails + Solid Mask)
     float nRad = (g.data.turn.heading - 90.0f) * (M_PI / 180.0f);
     float nCos = cosf(nRad), nSin = sinf(nRad);
     float width = r * 0.10f;
-    float offX = -nSin * width, offY = nCos * width; 
     float bodyR = r * 0.60f;
     float tipR = r * 0.75f;
 
-    // Rails
-    drawSafeLine(*canvas, cx + offX - bodyR * nCos, cy + offY - bodyR * nSin, cx + offX + bodyR * nCos, cy + offY + bodyR * nSin);
-    drawSafeLine(*canvas, cx - offX - bodyR * nCos, cy - offY - bodyR * nSin, cx - offX + bodyR * nCos, cy - offY + bodyR * nSin);
+    // A. THE MASK: Draw a solid black triangle/polygon underneath
+    // This "erases" the home needle stem before we draw the green rails
+    canvas->setDrawColor(0); // Set color to BLACK (Background)
     
-    // Arrow Head
+    // We create a simple triangle from center to the rails and tip
+    float offX = -nSin * width, offY = nCos * width; 
+    canvas->drawTriangle(cx + offX, cy + offY, 
+                         cx - offX, cy - offY, 
+                         cx + tipR * nCos, cy + tipR * nSin);
+    
+    canvas->setDrawColor(1); // Set color back to WHITE/GREEN for the rails
+
+    // B. THE RAILS (Existing logic)
+    drawSafeLine(*canvas, cx + offX, cy + offY, cx + offX + bodyR * nCos, cy + offY + bodyR * nSin);
+    drawSafeLine(*canvas, cx - offX, cy - offY, cx - offX + bodyR * nCos, cy - offY + bodyR * nSin);
+    
+    // C. ARROW HEAD (Existing logic)
     float tipX = cx + tipR * nCos, tipY = cy + tipR * nSin;
     drawSafeLine(*canvas, cx + offX + bodyR * nCos, cy + offY + bodyR * nSin, tipX, tipY);
     drawSafeLine(*canvas, cx - offX + bodyR * nCos, cy - offY + bodyR * nSin, tipX, tipY);
@@ -1395,7 +1406,7 @@ void drawFuel(Gauge &g) {
 void updateCompassAndClockDisplay() {
   static float visualHeading = 0.0f;
   static float visualHome = 0.0f;
-  const float alpha = 0.15f; // Smoothing factor
+  const float alpha = 0.25f; // Smoothing factor
 
   // 1. Smooth the Heading
   float deltaH = (float)compassGauge.data.compass.heading - visualHeading;
