@@ -666,52 +666,72 @@ void drawPoshHorizon(Gauge &g) {
   int cx = g.r; 
   int cy = g.r;
 
-  // 1. COLORS
+  // 1. DATA & COLORS
   uint16_t groundColor = 0x9442; // Saddle Brown
-  uint16_t skyColor = 0x5D9B;    // Steel Blue
+  uint16_t skyColor    = 0x5D9B; // Steel Blue
+  float roll = g.data.horizon.roll;
+  float pitch = g.data.horizon.pitch;
   
-  float rll = g.data.horizon.roll;
-  float ptch = g.data.horizon.pitch;
-  float radRoll = rll * (PI / 180.0f);
-  float tanRoll = tan(radRoll);
-  float pOffset = constrain(ptch * 1.5f, -35.0f, 35.0f); // Increased sensitivity slightly
+  float radRoll = roll * (PI / 180.0f);
+  float cosR = cos(radRoll);
+  float sinR = sin(radRoll);
+  float pOffset = pitch * 1.5f; 
 
-  // 2. DRAW MOVING HORIZON (Sky/Ground)
+  // 2. DRAW ROTATED WORLD (Sky/Ground)
   canvas.fillSprite(skyColor);
-  for (int i = -cx; i <= cx; i++) {
-    float horizonY = cy - pOffset + (i * tanRoll);
-    if (horizonY < diameter) {
-      canvas.drawLine(cx + i, (int)constrain(horizonY, 0.0f, (float)diameter), cx + i, diameter, groundColor);
-    }
-  }
+  
+  // We define a massive rectangle for the ground and rotate its corners
+  int boxW = diameter * 2; // Extra wide for rotation coverage
+  int boxH = diameter * 2;
+  
+  // The 4 corners of the Ground box relative to the horizon line
+  // Corner points (x, y) before rotation
+  float pts[4][2] = {
+    {-boxW, 0}, {boxW, 0}, {boxW, boxH}, {-boxW, boxH}
+  };
 
-  // 3. PITCH LADDER (White lines on the moving horizon)
+  int x[4], y[4];
+  for(int i = 0; i < 4; i++) {
+    // Standard Rotation Matrix: x' = x*cos - y*sin | y' = x*sin + y*cos
+    // We add pOffset to the 'y' component before rotating to handle pitch
+    float localY = pts[i][1] + pOffset;
+    x[i] = cx + (pts[i][0] * cosR - localY * sinR);
+    y[i] = cy + (pts[i][0] * sinR + localY * cosR);
+  }
+  
+  // Fill the ground polygon (using two triangles)
+  canvas.fillTriangle(x[0], y[0], x[1], y[1], x[2], y[2], groundColor);
+  canvas.fillTriangle(x[0], y[0], x[2], y[2], x[3], y[3], groundColor);
+
+  // 3. PITCH LADDER (Locked to Ground, Fixed Text)
   canvas.setTextColor(TFT_WHITE);
-  for (int p = -20; p <= 20; p += 5) {
-    if (p == 0) continue; // The actual horizon line
-    float pitchY = cy - pOffset - (p * 1.5f); // Sync with pOffset multiplier
+  canvas.setTextSize(1);
+  for (int p = -30; p <= 30; p += 10) {
+    if (p == 0) continue; 
     
-    // Rotate and draw pitch lines
-    int lineW = (p % 10 == 0) ? 15 : 8; // Longer lines for 10, 20
-    float cosR = cos(radRoll);
-    float sinR = sin(radRoll);
+    float pY = (p * 1.5f) + pOffset; 
+    int lineW = 15;
 
-    int xStart = cx - (lineW * cosR);
-    int yStart = pitchY - (lineW * sinR);
-    int xEnd = cx + (lineW * cosR);
-    int yEnd = pitchY + (lineW * sinR);
+    // Calculate rotated endpoints
+    int x1 = cx + (-lineW * cosR - pY * sinR);
+    int y1 = cy + (-lineW * sinR + pY * cosR);
+    int x2 = cx + (lineW * cosR - pY * sinR);
+    int y2 = cy + (lineW * sinR + pY * cosR);
 
-    if (pitchY > 5 && pitchY < diameter - 5) {
-       canvas.drawLine(xStart, yStart, xEnd, yEnd, TFT_WHITE);
-       if (p % 10 == 0) {
-         canvas.setTextSize(1);
-         canvas.setCursor(xEnd + 2, yEnd - 4);
-         canvas.print(abs(p));
-       }
+    if (y1 > 0 && y1 < diameter && y2 > 0 && y2 < diameter) {
+       canvas.drawLine(x1, y1, x2, y2, TFT_WHITE);
+       
+       // --- FIXED TEXT LOGIC ---
+       // We find which of the two points (x1 or x2) is further "Right" on the actual screen
+       int rightX = (x1 > x2) ? x1 : x2;
+       int rightY = (x1 > x2) ? y1 : y2;
+       
+       // Now offset the text slightly to the right of THAT point
+       canvas.setCursor(rightX + 3, rightY - 4);
+       canvas.print(abs(p));
     }
   }
-
-  // 4. TOP BANK SCALE (Static)
+  // 4. TOP BANK SCALE (Static - your original version)
   int angles[] = {-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60};
   for (int i = 0; i < 11; i++) {
     float aRad = (angles[i] - 90) * (PI / 180.0f);
@@ -720,22 +740,20 @@ void drawPoshHorizon(Gauge &g) {
                     cx + g.r*cos(aRad), cy + g.r*sin(aRad), TFT_WHITE);
   }
 
-  // 5. THE MINIATURE AIRCRAFT (Fixed Yellow "Wings" and Center Dot)
-  // Center Dot
+  // 5. THE MINIATURE AIRCRAFT (The P-51 Yellow Wings)
   canvas.fillCircle(cx, cy, 2, TFT_YELLOW);
-  // Left Wing
   canvas.fillRect(cx - 24, cy - 1, 14, 3, TFT_YELLOW); 
-  canvas.drawFastVLine(cx - 10, cy - 1, 5, TFT_YELLOW); // Down-turned tip
-  // Right Wing
+  canvas.drawFastVLine(cx - 10, cy - 1, 5, TFT_YELLOW); 
   canvas.fillRect(cx + 10, cy - 1, 14, 3, TFT_YELLOW);
   canvas.drawFastVLine(cx + 10, cy - 1, 5, TFT_YELLOW);
 
-  // 6. TDC TRIANGLE (Sky Reference)
+  // 6. TDC TRIANGLE
   canvas.fillTriangle(cx - 3, 5, cx + 3, 5, cx, 11, TFT_YELLOW);
 
   canvas.pushSprite(g.x - cx, g.y - cy);
   canvas.deleteSprite();
 }
+
 
 void drawHorizon(Gauge &g) {
   if (g.screen != SCREEN_TFT) return;
