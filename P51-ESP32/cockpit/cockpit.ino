@@ -275,10 +275,12 @@ struct Telemetry {
   int16_t dirToHome = 0;
 
   // Gear & Flaps logic
-  bool gearDown = true;
-  bool lastGearDown = true;
-  bool gearInTransit = false;
-  uint32_t gearTimer = 0;
+  bool gearCommand;        // What the pilot wants (Switch Position)
+  bool lastGearCommand;    // For detecting the moment the switch is flipped
+  bool gearDown;           // The actual physical state of the wheels
+  bool lastGearDown;
+  bool gearInTransit;      // Is the hydraulic system running?
+  uint32_t gearTimer;      // When did the movement start?
   const uint32_t GEAR_CYCLE_TIME = 5000;
   int flapPos = 0; // 0: Up, 1: Takeoff, 2: Landing
 
@@ -298,19 +300,12 @@ struct Telemetry {
 // The instance marked as volatile for cross-core safety
 volatile Telemetry aircraft;
 
-// --- Helper for the Gear Logic ---
 void updateGearPhysics() {
   if (aircraft.gearInTransit) {
-    // Check if the 5-second cycle time has elapsed
     if (millis() - aircraft.gearTimer >= aircraft.GEAR_CYCLE_TIME) {
-      aircraft.gearInTransit = false;
-      
-      // Toggle the physical state: if they were up, they are now down.
-      aircraft.gearDown = !aircraft.gearDown; 
-
-      if (isDebug) {
-        console.printf("DEBUG -> GEAR LOCKED: %s\n", aircraft.gearDown ? "DOWN" : "UP");
-      }
+      aircraft.gearInTransit = false; // Stop the movement
+      // The wheels now match whatever switch position started this mess
+      aircraft.gearDown = aircraft.lastGearDown; 
     }
   }
 }
@@ -419,18 +414,13 @@ bool parseMSP() {
       uint16_t newGearVal = payload[gearIdx] | (payload[gearIdx + 1] << 8);
       bool switchPositionDown = (newGearVal > 1500); 
 
-      // If the switch position is DIFFERENT than our physical gear state 
-      // AND we aren't already mid-transit, start the sequence.
+      // If switch changed and we aren't moving, start moving!
       if (switchPositionDown != aircraft.gearDown && !aircraft.gearInTransit) {
         aircraft.gearInTransit = true;
         aircraft.gearTimer = millis();
-        
-        if (isDebug) {
-          console.printf("DEBUG -> GEAR COMMAND: %s (Moving...)\n", switchPositionDown ? "DOWN" : "UP");
-        }
+        aircraft.lastGearDown = switchPositionDown; // Save the goal
       }
     }
-
     // 3. FLAPS (Channel 7)
     int flapIdx = (CH_FLAPS - 1) * 2;
     if (size >= (flapIdx + 2)) {
@@ -1112,50 +1102,39 @@ void drawVSI(Gauge &g) {
 void drawGearStatus(Gauge &g) {
   if (g.screen != SCREEN_TFT) return;
   TFT_eSPI* tftPtr = (TFT_eSPI*)g.displayPtr;
-  
-  // 1. SPRITE SETUP
-  // We use a local sprite object for this small indicator
   TFT_eSprite canvas = TFT_eSprite(tftPtr);
-  if (!canvas.createSprite(70, 22)) return;
   
-  int localCX = 35; 
-  int localCY = 11; 
-  int spacing = 20; 
-
+  // Keep your original 70x22 canvas size
+  if (!canvas.createSprite(70, 22)) return;
   canvas.fillSprite(P51_CHARCOAL);
 
-  // 2. TRANSIT LOGIC (Now looking inside the aircraft struct)
-  // Check if the gear state has changed since the last frame
-  if (aircraft.gearDown != aircraft.lastGearDown) {
-    aircraft.gearInTransit = true;
-    aircraft.gearTimer = millis();
-    aircraft.lastGearDown = aircraft.gearDown;
-  }
-  
-  // 7-second transit timer
-  if (aircraft.gearInTransit && (millis() - aircraft.gearTimer > 7000)) {
-    aircraft.gearInTransit = false;
-  }
+  int lx = 15; // Green Light Center X
+  int rx = 55; // Red Light Center X
+  int cy = 11; // Vertical Center
+  int r  = 11; // MAX RADIUS (Fills the 22px height exactly)
 
-  // 3. RED LIGHT (UNSAFE / IN TRANSIT)
-  // Shown whenever the gear is moving
+  // 1. RED LIGHT (UNSAFE / IN TRANSIT)
   if (aircraft.gearInTransit) {
-    canvas.fillCircle(localCX + spacing, localCY, 6, TFT_RED);
-    canvas.drawCircle(localCX + spacing, localCY, 7, 0x8000); // Dark Red Glow
+    // Solid fill to the edge of the 22px height
+    canvas.fillCircle(rx, cy, r, TFT_RED);
+    // Subtle inner shadow to give it depth without a white ring
+    canvas.drawCircle(rx, cy, r, 0x8000); 
+  } else {
+    // Dim "Glass" look - slightly smaller so it doesn't bleed when off
+    canvas.fillCircle(rx, cy, r - 2, 0x2000); 
   }
 
-  // 4. GREEN LIGHT (LOCKED & DOWN)
-  // Only shown when transit is finished AND gear is down
+  // 2. GREEN LIGHT (LOCKED & DOWN)
   if (aircraft.gearDown && !aircraft.gearInTransit) {
-    canvas.fillCircle(localCX - spacing, localCY, 6, TFT_GREEN);
-    canvas.drawCircle(localCX - spacing, localCY, 7, 0x03E0); // Green Glow
+    canvas.fillCircle(lx, cy, r, TFT_GREEN);
+    canvas.drawCircle(lx, cy, r, 0x03E0); 
+  } else {
+    canvas.fillCircle(lx, cy, r - 2, 0x0100); 
   }
 
-  // 5. PUSH TO SCREEN
   canvas.pushSprite(g.x, g.y);
-  canvas.deleteSprite(); // Clean up memory
+  canvas.deleteSprite();
 }
-
 
 // --- HELPER: PREVENT COORDINATE WRAPPING GLITCH ---
 void drawSafeLine(U8G2 &canvas, float x1, float y1, float x2, float y2) {
